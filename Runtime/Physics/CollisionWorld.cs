@@ -85,6 +85,13 @@ public sealed class CollisionNode : IDisposable
         using Shape shape = SphereShape.Create(radius);
         return Add(shape, trigger);
     }
+    /// <summary>Add indexed static geometry directly from a content bake, in node-local space.</summary>
+    public Collider AddMesh(ReadOnlySpan<float3> vertices, ReadOnlySpan<IndexedTriangle> triangles, bool trigger = false)
+    {
+        using var settings = MeshShapeSettings.Create(vertices, triangles, ReadOnlySpan<PhysicsMaterial>.Empty);
+        using Shape shape = MeshShape.Create(settings);
+        return Add(shape, trigger);
+    }
     internal Collider Add(Shape shape, bool trigger)
     {
         var collider = new Collider(world, this, shape, trigger);
@@ -241,15 +248,16 @@ public partial class CollisionWorld : IDisposable
                         uint a = iter.Current.GetUInt32(); iter.MoveNext(); uint b = iter.Current.GetUInt32(); iter.MoveNext();
                         triangles[n++] = IndexedTriangle.Create(a,b,iter.Current.GetUInt32(),0);
                     }
-                    using (var settings = MeshShapeSettings.Create(vertices,triangles,ReadOnlySpan<PhysicsMaterial>.Empty))
-                    using (Shape shape = MeshShape.Create(settings)) collider=node.Add(shape,trigger);
+                    collider = node.AddMesh(vertices, triangles, trigger);
                     break;
                 default: throw new InvalidDataException("Unknown collider kind in "+collisionPath);
             }
             collider.Surface=item.GetProperty("surface"u8).GetInt32();
         }
-        system.OptimizeBroadPhase();
+        OptimizeBroadPhase();
     }
+    /// <summary>Finish bulk insertion before starting concurrent scene queries.</summary>
+    public void OptimizeBroadPhase() => system.OptimizeBroadPhase();
     public CollisionNode GetGroup(string name) => groups[name];
     public bool TryGetGroup(string name, out CollisionNode group) => groups.TryGetValue(name, out group);
     public void SetGroupActive(string group,bool enabled) => groups[group].SetActive(enabled);
