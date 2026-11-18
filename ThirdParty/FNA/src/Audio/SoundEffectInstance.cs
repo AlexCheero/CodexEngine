@@ -638,6 +638,11 @@ namespace Microsoft.Xna.Framework.Audio
 
 		private unsafe void SetPanMatrixCoefficients()
 		{
+			SetPanMatrixCoefficients(INTERNAL_pan, dspSettings.SrcChannelCount, dspSettings.DstChannelCount, (float*) dspSettings.pMatrixCoefficients);
+		}
+
+		internal static unsafe void SetPanMatrixCoefficients(float pan, uint sourceChannels, uint outputChannels, float* outputMatrix)
+		{
 			/* Two major things to notice:
 			 * 1. The spec assumes any speaker count >= 2 has Front Left/Right.
 			 * 2. Stereo panning is WAY more complicated than you think.
@@ -646,45 +651,44 @@ namespace Microsoft.Xna.Framework.Audio
 			 * Aside from that, XNA is pretty naive about the output matrix.
 			 * -flibit
 			 */
-			float* outputMatrix = (float*) dspSettings.pMatrixCoefficients;
-			if (dspSettings.SrcChannelCount == 1)
+			if (sourceChannels == 1)
 			{
-				if (dspSettings.DstChannelCount == 1)
+				if (outputChannels == 1)
 				{
 					outputMatrix[0] = 1.0f;
 				}
 				else
 				{
-					outputMatrix[0] = (INTERNAL_pan > 0.0f) ? (1.0f - INTERNAL_pan) : 1.0f;
-					outputMatrix[1] = (INTERNAL_pan < 0.0f) ? (1.0f  + INTERNAL_pan) : 1.0f;
+					outputMatrix[0] = (pan > 0.0f) ? (1.0f - pan) : 1.0f;
+					outputMatrix[1] = (pan < 0.0f) ? (1.0f  + pan) : 1.0f;
 				}
 			}
 			else
 			{
-				if (dspSettings.DstChannelCount == 1)
+				if (outputChannels == 1)
 				{
 					outputMatrix[0] = 1.0f;
 					outputMatrix[1] = 1.0f;
 				}
 				else
 				{
-					if (INTERNAL_pan <= 0.0f)
+					if (pan <= 0.0f)
 					{
 						// Left speaker blends left/right channels
-						outputMatrix[0] = 0.5f * INTERNAL_pan + 1.0f;
-						outputMatrix[1] = 0.5f * -INTERNAL_pan;
+						outputMatrix[0] = 0.5f * pan + 1.0f;
+						outputMatrix[1] = 0.5f * -pan;
 						// Right speaker gets less of the right channel
 						outputMatrix[2] = 0.0f;
-						outputMatrix[3] = INTERNAL_pan + 1.0f;
+						outputMatrix[3] = pan + 1.0f;
 					}
 					else
 					{
 						// Left speaker gets less of the left channel
-						outputMatrix[0] = -INTERNAL_pan + 1.0f;
+						outputMatrix[0] = -pan + 1.0f;
 						outputMatrix[1] = 0.0f;
 						// Right speaker blends right/left channels
-						outputMatrix[2] = 0.5f * INTERNAL_pan;
-						outputMatrix[3] = 0.5f * -INTERNAL_pan + 1.0f;
+						outputMatrix[2] = 0.5f * pan;
+						outputMatrix[3] = 0.5f * -pan + 1.0f;
 					}
 				}
 			}
