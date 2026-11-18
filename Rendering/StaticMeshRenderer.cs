@@ -88,6 +88,7 @@ public sealed class StaticMeshRenderer : IDisposable
     readonly EffectParameter world, viewProjection, eye, albedo, cutoff;
 
     public Matrix ViewProjection { get; private set; }
+    public Effect Material => shader;
     public bool InspectFrame { get; set; }
 
     public StaticMeshRenderer(GraphicsDevice gpu, string effectPath, string textureDirectory,
@@ -163,9 +164,9 @@ public sealed class StaticMeshRenderer : IDisposable
         gpu.DepthStencilState=DepthStencilState.Default;gpu.RasterizerState=RasterizerState.CullNone;gpu.BlendState=BlendState.Opaque;
         gpu.SamplerStates[0]=SamplerState.AnisotropicWrap;
     }
-    public void Draw(Batch batch,Matrix transform)
+    public void Draw(Batch batch,Matrix transform,EffectTechnique technique = null)
     {
-        shader.CurrentTechnique=InspectFrame ? frameTechnique : surfaceTechnique;world.SetValue(transform);
+        shader.CurrentTechnique=technique ?? (InspectFrame ? frameTechnique : surfaceTechnique);world.SetValue(transform);
         gpu.SetVertexBuffer(batch.Vertices);gpu.Indices=batch.Indices;
         foreach(var span in batch.Spans){
             albedo.SetValue(span.Map);cutoff.SetValue(span.Cutoff);

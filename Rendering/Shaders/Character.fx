@@ -18,3 +18,8 @@ technique AnimatedFrame
 {
     pass P0 { VertexShader = compile vs_3_0 CharacterVertex(); PixelShader = compile ps_3_0 FrameFragment(); }
 }
+ShadowVertex AnimatedCaster(SkinInput v) { return ProjectCaster(CharacterVertex(v)); }
+technique AnimatedShadow
+{
+    pass P0 { VertexShader = compile vs_3_0 AnimatedCaster(); PixelShader = compile ps_3_0 ShadowDepth(); }
+}

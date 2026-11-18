@@ -63,6 +63,7 @@ public sealed class SkinnedMeshRenderer : IDisposable
     readonly EffectTechnique surfaceTechnique, frameTechnique;
     readonly EffectParameter paletteParameter, worldParameter, viewProjectionParameter, mapParameter, tintParameter, cutoffParameter, eyeParameter;
     readonly Vector4[] palette = new Vector4[64 * 3];
+    public Effect Material => shader;
 
     public SkinnedMeshRenderer(GraphicsDevice gpu, string effectPath, string surfaceTechnique, string frameTechnique)
     {
@@ -142,9 +143,9 @@ public sealed class SkinnedMeshRenderer : IDisposable
     }
 
     public void Draw(ReadOnlySpan<Part> parts, ReadOnlySpan<Matrix> bones, Matrix world, Matrix viewProjection,
-        Vector3 eye, bool inspectFrame)
+        Vector3 eye, bool inspectFrame, EffectTechnique technique = null)
     {
-        shader.CurrentTechnique = inspectFrame ? frameTechnique : surfaceTechnique;
+        shader.CurrentTechnique = technique ?? (inspectFrame ? frameTechnique : surfaceTechnique);
         worldParameter.SetValue(world);
         viewProjectionParameter.SetValue(viewProjection);
         eyeParameter.SetValue(eye);
