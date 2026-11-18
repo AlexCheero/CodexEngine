@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../CodexECS/CodexECS.csproj" />
+    <PackageReference Include="Ahwoo.BRUTAL.Jolt" Version="2026.10.4" />
+    <Content Include="../ThirdParty/Brutal/NOTICE.txt" Link="NOTICE.txt" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../ThirdParty/Brutal/LICENSE.txt;../ThirdParty/Brutal/brutal.png"
+             Link="Content/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../ThirdParty/Brutal/BRUTAL-JOLT-THIRD-PARTY-NOTICES.txt"
+             Link="Content/Licenses/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

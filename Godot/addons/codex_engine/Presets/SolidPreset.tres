@@ -1,0 +1,16 @@
+[gd_resource type="Resource" format=3]
+[ext_resource type="Script" path="res://addons/codex_engine/EntityPreset.cs" id="p"]
+[ext_resource type="Script" path="res://addons/codex_engine/ComponentPrototype.cs" id="base"]
+[ext_resource type="Script" path="res://addons/codex_engine/ModelPrototype.cs" id="s0"]
+[ext_resource type="Script" path="res://addons/codex_engine/BoxBodyPrototype.cs" id="s1"]
+
+[sub_resource type="Resource" id="c0"]
+script = ExtResource("s0")
+
+[sub_resource type="Resource" id="c1"]
+script = ExtResource("s1")
+
+[resource]
+script = ExtResource("p")
+Components = Array[ExtResource("base")]([SubResource("c0"), SubResource("c1")])
+GroupComponents = 7

@@ -1,0 +1,16 @@
+<Project>
+  <PropertyGroup>
+    <_CodexAddonSource>$(MSBuildThisFileDirectory)addons/codex_engine/</_CodexAddonSource>
+    <_CodexAddonMount>$(MSBuildProjectDirectory)/addons/codex_engine/</_CodexAddonMount>
+    <_CodexMountScript>$(MSBuildThisFileDirectory)MountAddon.ps1</_CodexMountScript>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The SDK evaluates the compiler glob before a fresh checkout has its Godot mount. -->
+    <_CodexAddonScript Include="$(_CodexAddonSource)**/*.cs" />
+    <Compile Remove="addons/codex_engine/**/*.cs" />
+    <Compile Include="@(_CodexAddonScript->'$(_CodexAddonMount)%(RecursiveDir)%(Filename)%(Extension)')" />
+  </ItemGroup>
+  <Target Name="SyncGodotAddon" BeforeTargets="PrepareForBuild">
+    <Exec Command="powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(_CodexMountScript)&quot; -EditorDirectory &quot;$(MSBuildProjectDirectory)&quot;" />
+  </Target>
+</Project>

@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net10.0</TargetFramework><AllowUnsafeBlocks>true</AllowUnsafeBlocks><LangVersion>9</LangVersion></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../CodexECS/CodexECS.csproj" /></ItemGroup>
+</Project>

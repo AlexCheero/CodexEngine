@@ -1,0 +1,155 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Text;
+
+namespace CodexECS
+{
+    public static class ComponentMapping
+    {
+        public interface IWorldCallDispatcher
+        {
+            public void AddDefault(EcsWorld world, int id);
+            public void Add(EcsWorld world, int id, object obj);
+            public void AddMultiple(EcsWorld world, int id, object obj);
+            public void Set(EcsWorld world, int id, object obj);
+            public void Remove(EcsWorld world, int id);
+            public void Copy(EcsWorld world, int from, int to);
+            public void ReactOnAdd(EcsWorld world, int id, bool checkComponentsSetMatch);
+            public void ReactOnRemove(EcsWorld world, int id);
+        }
+
+        private class WorldCallDispatcher<T> : IWorldCallDispatcher
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void AddDefault(EcsWorld world, int id) => world.Add<T>(id);
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void Add(EcsWorld world, int id, object obj) => world.Add(id, (T)obj);
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void AddMultiple(EcsWorld world, int id, object obj) => world.AddMultiple(id, (T)obj);
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void Set(EcsWorld world, int id, object obj) => world.Replace(id, (T)obj);
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void Remove(EcsWorld world, int id) => world.Remove<T>(id);
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void Copy(EcsWorld world, int from, int to) => world.CopyComponent<T>(from, to);
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void ReactOnAdd(EcsWorld world, int id, bool checkComponentsSetMatch) =>
+                world.ReactOnAdd<T>(id, checkComponentsSetMatch);
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public void ReactOnRemove(EcsWorld world, int id) => world.ReactOnRemove<T>(id);
+        }
+
+        public static readonly Dictionary<Type, IWorldCallDispatcher> CallDispatchers = new();
+        private static readonly Dictionary<Type, int> TypeToId = new();
+        private static readonly Dictionary<int, Type> IDToType = new();
+        private static readonly Dictionary<Type, int> MultipleStorageIds = new();
+        // Component ids are small and dense: id-keyed paths (entity creation, copies) skip the Type dictionaries.
+        private static IWorldCallDispatcher[] _dispatchersById = new IWorldCallDispatcher[128];
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static IWorldCallDispatcher GetDispatcher(int id) => _dispatchersById[id];
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static int GetIdForType(Type type) => TypeToId[type];
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static Type GetTypeForId(int id) => IDToType[id];
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static bool HaveType(Type type) => TypeToId.ContainsKey(type);
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static bool HaveId(int id) => IDToType.ContainsKey(id);
+
+        /// <summary>
+        /// Ensures that the closed ComponentMeta type has registered the supplied runtime
+        /// component type, then returns its id. Editor tooling uses this before building
+        /// filters for component types that may not have appeared in the world yet.
+        /// </summary>
+        public static int EnsureTypeRegistered(Type type)
+        {
+            if (type == null)
+                throw new ArgumentNullException(nameof(type));
+            if (!HaveType(type))
+            {
+                var componentMetaType = typeof(ComponentMeta<>).MakeGenericType(type);
+                RuntimeHelpers.RunClassConstructor(componentMetaType.TypeHandle);
+            }
+
+            return GetIdForType(type);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static bool TryGetMultipleStorageId(int componentId, out int storageId)
+        {
+            storageId = -1;
+            return IDToType.TryGetValue(componentId, out var componentType) &&
+                   MultipleStorageIds.TryGetValue(componentType, out storageId);
+        }
+        
+        public static void Add(Type type, int id)
+        {
+#if DEBUG && !ECS_PERF_TEST
+            if (TypeToId.ContainsKey(type))
+                throw new EcsException($"Components mapping desynch. TypeToId already contains {type.FullName}");
+            if (IDToType.ContainsKey(id))
+                throw new EcsException($"Components mapping desynch. IdToType already contains {id}");
+#endif
+            
+            TypeToId[type] = id;
+            IDToType[id] = type;
+
+            if (type.IsGenericType &&
+                type.GetGenericTypeDefinition() == typeof(MultipleComponents<>))
+                MultipleStorageIds[type.GetGenericArguments()[0]] = id;
+            
+            var closedType = typeof(WorldCallDispatcher<>).MakeGenericType(type);
+            var dispatcher = (IWorldCallDispatcher)Activator.CreateInstance(closedType);
+            CallDispatchers[type] = dispatcher;
+            if (id >= _dispatchersById.Length)
+                Array.Resize(ref _dispatchersById, Math.Max(id + 1, _dispatchersById.Length * 2));
+            _dispatchersById[id] = dispatcher;
+
+#if DEBUG && !ECS_PERF_TEST
+            foreach (var pair in TypeToId)
+            {
+                if (!IDToType.ContainsKey(pair.Value))
+                    throw new EcsException($"Components mapping desynch");
+            }
+            
+            foreach (var pair in IDToType)
+            {
+                if (!TypeToId.ContainsKey(pair.Value))
+                    throw new EcsException($"Components mapping desynch");
+            }
+            
+            if (TypeToId.GroupBy(kv => kv.Value).Any(g => g.Count() > 1))
+                throw new EcsException($"Components mapping desynch");
+            if (IDToType.GroupBy(kv => kv.Value).Any(g => g.Count() > 1))
+                throw new EcsException($"Components mapping desynch");
+#endif
+        }
+
+#if DEBUG
+        private static StringBuilder _debugBuilder;
+        public static string DebugByMask(BitMask mask)
+        {
+            if (mask.Length == 0)
+                return "{ }";
+            
+            _debugBuilder ??= new();
+            _debugBuilder.Clear();
+                
+            _debugBuilder.Append("{ ");
+            foreach (var bit in mask)
+                _debugBuilder.Append(GetTypeForId(bit).FullName + ",\n");
+            _debugBuilder.Remove(_debugBuilder.Length - 2, 2);
+            _debugBuilder.Append(" }");
+            
+            return _debugBuilder.ToString();
+        }
+#endif
+    }
+}
