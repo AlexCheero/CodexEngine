@@ -11,13 +11,13 @@
              Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="../ThirdParty/FNA/Notices/*.txt"
              Link="Content/Licenses/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="$(EffectsDir)\Surface.fxb;$(EffectsDir)\Character.fxb"
+    <Content Include="$(EffectsDir)\Surface.fxb;$(EffectsDir)\Character.fxb;$(EffectsDir)\AmbientOcclusion.fxb"
              Link="Content/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <ShaderSource Include="Shaders/*.fx;Shaders/*.hlsl" />
   </ItemGroup>
   <Target Name="CompileFnaEffects" BeforeTargets="PrepareForBuild"
           Inputs="@(ShaderSource);$(MSBuildProjectDirectory)\CompileEffects.ps1;$(MSBuildProjectFullPath)"
-          Outputs="$(EffectsDir)\Surface.fxb;$(EffectsDir)\Character.fxb">
+          Outputs="$(EffectsDir)\Surface.fxb;$(EffectsDir)\Character.fxb;$(EffectsDir)\AmbientOcclusion.fxb">
     <Exec Command="powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\CompileEffects.ps1&quot; -SourceDirectory &quot;$(MSBuildProjectDirectory)\Shaders&quot; -OutputDirectory &quot;$(EffectsDir)&quot;" />
   </Target>
 </Project>
