@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory)][string]$SourceDirectory,
-    [Parameter(Mandatory)][string]$OutputDirectory
+    [Parameter(Mandatory)][string]$OutputDirectory,
+    [string[]]$Effects = @('Surface', 'Character')
 )
 $ErrorActionPreference = 'Stop'
 $kits = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots' -ErrorAction SilentlyContinue
@@ -17,7 +18,6 @@ if (!$compiler) { throw 'Install the Windows SDK with the x64 FXC shader compile
 $output = [IO.Directory]::CreateDirectory($OutputDirectory).FullName
 $temporary = Join-Path $output ([guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($temporary) | Out-Null
-$effects = 'Surface', 'Character'
 try {
     foreach ($effect in $effects) {
         $source = Join-Path $SourceDirectory ($effect + '.fx')

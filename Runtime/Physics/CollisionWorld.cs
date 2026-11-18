@@ -21,7 +21,7 @@ public sealed class CollisionNode : IDisposable
     public readonly string name;
     public int layer;
     public bool activeSelf { get; private set; } = true;
-    internal bool Active => activeSelf && (parent == null || parent.Active);
+    public bool IsActiveInHierarchy => !disposed && activeSelf && (parent == null || parent.IsActiveInHierarchy);
 
     private readonly CollisionWorld world;
     public CollisionNode(string name) : this(CollisionWorld.Current, name) { }
@@ -118,7 +118,7 @@ public sealed class Collider : IDisposable
         body.SetIsSensor(trigger);
         Id = world.Bodies.CreateAndAddBody(body,Activation.DontActivate);
         world.Register(this);
-        if (!node.Active) world.Bodies.RemoveBody(Id);
+        if (!node.IsActiveInHierarchy) world.Bodies.RemoveBody(Id);
     }
     internal Collider(CollisionWorld world, CollisionNode node, uint bodyId)
     {
@@ -138,7 +138,7 @@ public sealed class Collider : IDisposable
     internal void Synchronize()
     {
         bool added = world.Bodies.IsAdded(Id);
-        if (!transform.Active) { if (added) world.Bodies.RemoveBody(Id); return; }
+        if (!transform.IsActiveInHierarchy) { if (added) world.Bodies.RemoveBody(Id); return; }
         world.Bodies.SetPositionAndRotationWhenChanged(Id,CollisionWorld.Native(transform.position),CollisionWorld.Native(transform.rotation),Activation.DontActivate);
         if (!added) world.Bodies.AddBody(Id,Activation.DontActivate);
     }
