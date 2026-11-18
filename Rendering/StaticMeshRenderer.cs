@@ -117,14 +117,43 @@ public sealed class StaticMeshRenderer : IDisposable
     public Texture2D Texture(string name)
     {
         if(textures.TryGetValue(name,out var existing))return existing;
-        using var r=new BinaryReader(File.OpenRead(Path.Combine(textureDirectory,Path.GetFileNameWithoutExtension(name)+".btex")));
-        int w=r.ReadInt32(),h=r.ReadInt32(),block=r.ReadInt32(),levels=r.ReadInt32();
-        var format=block switch{1=>SurfaceFormat.Dxt1,3=>SurfaceFormat.Dxt3,5=>SurfaceFormat.Dxt5,_=>throw new InvalidDataException("Invalid BC texture "+name)};
-        var texture=new Texture2D(gpu,w,h,levels>1,format);
+        return Texture(ReadTexture(name));
+    }
+
+    public sealed class TextureData
+    {
+        internal string Name;
+        internal int Width, Height;
+        internal SurfaceFormat Format;
+        internal byte[][] Mips;
+        internal static readonly TextureData White = new() { Name = "" };
+    }
+
+    // This stage touches only the baked file and can run on an asset worker.
+    public TextureData ReadTexture(string name)
+    {
+        if (name.Length == 0) return TextureData.White;
+        using var r = new BinaryReader(File.OpenRead(Path.Combine(textureDirectory, Path.GetFileNameWithoutExtension(name) + ".btex")));
+        var data = new TextureData { Name = name, Width = r.ReadInt32(), Height = r.ReadInt32() };
+        data.Format = r.ReadInt32() switch { 1 => SurfaceFormat.Dxt1, 3 => SurfaceFormat.Dxt3, 5 => SurfaceFormat.Dxt5,
+            _ => throw new InvalidDataException("Invalid BC texture " + name) };
+        data.Mips = new byte[r.ReadInt32()][];
+        for (int i = 0; i < data.Mips.Length; i++)
+        {
+            data.Mips[i] = new byte[r.ReadInt32()];
+            r.BaseStream.ReadExactly(data.Mips[i]);
+        }
+        return data;
+    }
+
+    public Texture2D Texture(TextureData data)
+    {
+        if (textures.TryGetValue(data.Name, out var existing)) return existing;
+        var texture=new Texture2D(gpu,data.Width,data.Height,data.Mips.Length>1,data.Format);
         try{
-            for(int i=0;i<levels;i++){byte[] bytes=r.ReadBytes(r.ReadInt32());texture.SetData(i,null,bytes,0,bytes.Length);}
+            for(int i=0;i<data.Mips.Length;i++){var bytes=data.Mips[i];texture.SetData(i,null,bytes,0,bytes.Length);}
         }catch{texture.Dispose();throw;}
-        textures.Add(name,texture);return texture;
+        textures.Add(data.Name,texture);return texture;
     }
     public static Matrix MatrixOf(float[] m)=>new(m[0],m[1],m[2],m[3],m[4],m[5],m[6],m[7],m[8],m[9],m[10],m[11],m[12],m[13],m[14],m[15]);
     public void Camera(Matrix view,Matrix projection,Vector3 position)

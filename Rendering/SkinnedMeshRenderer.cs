@@ -38,27 +38,20 @@ public sealed class SkinnedMeshRenderer : IDisposable
         public ReadOnlySpan<int> Bones => boneIndices;
         public ReadOnlySpan<Matrix> Bind => inverseBindPoses;
 
-        internal Part(GraphicsDevice gpu, Vertex[] vertices, int[] indices, int[] bones, Matrix[] bind,
-            Texture2D map, Vector4 tint, float cutoff)
+        internal Part(GraphicsDevice gpu, PartData data, Texture2D map)
         {
-            boneIndices = bones;
-            inverseBindPoses = bind;
+            boneIndices = data.Bones;
+            inverseBindPoses = data.Bind;
             Map = map;
-            Tint = tint;
-            Cutoff = cutoff;
-            Vector3 min = new(float.MaxValue), max = new(float.MinValue);
-            foreach (var vertex in vertices)
-            {
-                min = Vector3.Min(min, vertex.Position);
-                max = Vector3.Max(max, vertex.Position);
-            }
-            Bounds = new BoundingBox(min, max);
+            Tint = data.Tint;
+            Cutoff = data.Cutoff;
+            Bounds = data.Bounds;
             try
             {
-                Vertices = new VertexBuffer(gpu, Vertex.Layout, vertices.Length, BufferUsage.WriteOnly);
-                Vertices.SetData(vertices);
-                Indices = new IndexBuffer(gpu, IndexElementSize.ThirtyTwoBits, indices.Length, BufferUsage.WriteOnly);
-                Indices.SetData(indices);
+                Vertices = new VertexBuffer(gpu, Vertex.Layout, data.Vertices.Length, BufferUsage.WriteOnly);
+                Vertices.SetData(data.Vertices);
+                Indices = new IndexBuffer(gpu, IndexElementSize.ThirtyTwoBits, data.Indices.Length, BufferUsage.WriteOnly);
+                Indices.SetData(data.Indices);
             }
             catch { Dispose(); throw; }
         }
@@ -94,27 +87,55 @@ public sealed class SkinnedMeshRenderer : IDisposable
         return new Matrix(m[0],m[4],-m[8],0, m[1],m[5],-m[9],0, -m[2],-m[6],m[10],0, m[3],m[7],-m[11],1);
     }
 
-    /// <summary>Reads the packed GPU mesh section. Each part owns its GPU buffers and borrows its texture.</summary>
-    public Part[] ReadParts(BinaryReader reader, Func<string, long, Texture2D> resolveTexture)
+    public sealed class PartData
     {
-        var parts = new Part[reader.ReadInt32()];
+        internal Vertex[] Vertices;
+        internal int[] Indices, Bones;
+        internal Matrix[] Bind;
+        internal StaticMeshRenderer.TextureData Texture;
+        internal Vector4 Tint;
+        internal float Cutoff;
+        internal BoundingBox Bounds;
+    }
+
+    public static PartData[] ReadParts(BinaryReader reader, Func<string, long, StaticMeshRenderer.TextureData> readTexture)
+    {
+        var parts = new PartData[reader.ReadInt32()];
+        for (int i = 0; i < parts.Length; i++)
+        {
+            var data = parts[i] = new PartData();
+            data.Texture = readTexture(reader.ReadString(), reader.ReadInt64());
+            data.Tint = new Vector4(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
+            data.Cutoff = reader.ReadSingle();
+            data.Bones = new int[reader.ReadInt32()];
+            data.Bind = new Matrix[data.Bones.Length];
+            for (int b = 0; b < data.Bones.Length; b++)
+            {
+                data.Bones[b] = reader.ReadInt32();
+                data.Bind[b] = ReadMatrix(reader);
+            }
+            data.Vertices = new Vertex[reader.ReadInt32()];
+            data.Indices = new int[reader.ReadInt32()];
+            reader.BaseStream.ReadExactly(MemoryMarshal.AsBytes(data.Vertices.AsSpan()));
+            reader.BaseStream.ReadExactly(MemoryMarshal.AsBytes(data.Indices.AsSpan()));
+            Vector3 min = new(float.MaxValue), max = new(float.MinValue);
+            foreach (var vertex in data.Vertices)
+            {
+                min = Vector3.Min(min, vertex.Position);
+                max = Vector3.Max(max, vertex.Position);
+            }
+            data.Bounds = new BoundingBox(min, max);
+        }
+        return parts;
+    }
+
+    public Part[] UploadParts(PartData[] data, Func<StaticMeshRenderer.TextureData, Texture2D> texture)
+    {
+        var parts = new Part[data.Length];
         try
         {
             for (int i = 0; i < parts.Length; i++)
-            {
-                Texture2D map = resolveTexture(reader.ReadString(), reader.ReadInt64());
-                var tint = new Vector4(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
-                float cutoff = reader.ReadSingle();
-                int numBones = reader.ReadInt32();
-                var bones = new int[numBones];
-                var bind = new Matrix[numBones];
-                for (int b = 0; b < numBones; b++) { bones[b] = reader.ReadInt32(); bind[b] = ReadMatrix(reader); }
-                var vertices = new Vertex[reader.ReadInt32()];
-                var indices = new int[reader.ReadInt32()];
-                reader.BaseStream.ReadExactly(MemoryMarshal.AsBytes(vertices.AsSpan()));
-                reader.BaseStream.ReadExactly(MemoryMarshal.AsBytes(indices.AsSpan()));
-                parts[i] = new Part(gpu, vertices, indices, bones, bind, map, tint, cutoff);
-            }
+                parts[i] = new Part(gpu, data[i], texture(data[i].Texture));
         }
         catch { foreach (var part in parts) part?.Dispose(); throw; }
         return parts;

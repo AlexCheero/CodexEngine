@@ -37,6 +37,7 @@ namespace CodexNetworking.Sync.StateSync
 
         private sealed class ClientState
         {
+            public Candidate[] Candidates = new Candidate[256];
             // Per net id: newest tick acked for this ghost, or -1 when the client does not know it.
             public int[] LastAcked = Array.Empty<int>();
             public bool[] DespawnPending = Array.Empty<bool>();
@@ -173,7 +174,6 @@ namespace CodexNetworking.Sync.StateSync
         private readonly int _ownerComponent;
         private int[] _slotByNetId = Array.Empty<int>();
         private int[] _slotStamp = Array.Empty<int>();
-        private Candidate[] _candidates = new Candidate[256];
         private uint _maxNetId;
         // Highest id ever indexed: every id a packet can carry (live or despawned) is at most this.
         private uint _highestNetId;
@@ -206,7 +206,8 @@ namespace CodexNetworking.Sync.StateSync
         public bool DespawnIrrelevant;
 
         /// <summary>Hide records written since construction (diagnostics).</summary>
-        public long HidesSent { get; private set; }
+        public long HidesSent => System.Threading.Interlocked.Read(ref _hidesSent);
+        private long _hidesSent;
 
         public SnapshotWriter(ReplicationRegistry registry, SimulationRegistry simulation, int maxClients, int packetHistory = 256)
         {
@@ -304,6 +305,7 @@ namespace CodexNetworking.Sync.StateSync
             cs.StagedStart = cs.SentIdCursor;
             cs.StagedCount = 0;
             cs.StagedTick = _tick;
+            cs.StagedPending = true;
 
             // 1. Despawns: ghosts the client knows that are gone.
             for (uint netId = 1; netId < cs.LastAcked.Length && count < MaxGhostsPerPacket; netId++)
@@ -352,7 +354,7 @@ namespace CodexNetworking.Sync.StateSync
                             cs.DespawnPending[netId] = true;
                             cs.GoneAt[netId] = _tick;
                             Stage(cs, netId | DespawnFlag);
-                            HidesSent++;
+                            System.Threading.Interlocked.Increment(ref _hidesSent);
                             count++;
                         }
                     }
@@ -365,17 +367,17 @@ namespace CodexNetworking.Sync.StateSync
                     cs.DespawnPending[netId] = false;
                     cs.LastAcked[netId] = -1;
                 }
-                if (candidateCount == _candidates.Length)
-                    Array.Resize(ref _candidates, _candidates.Length * 2);
+                if (candidateCount == cs.Candidates.Length)
+                    Array.Resize(ref cs.Candidates, cs.Candidates.Length * 2);
                 int priority = UsePriority ? _priority.Accumulate(client, netId, Weight == null ? 1 : Weight.WeightOf(_state, slot, netId)) : 0;
-                _candidates[candidateCount++] = new Candidate { NetId = netId, Priority = priority };
+                cs.Candidates[candidateCount++] = new Candidate { NetId = netId, Priority = priority };
             }
             if (UsePriority && candidateCount > 1)
-                SortCandidates(_candidates, 0, candidateCount - 1);
+                SortCandidates(cs.Candidates, 0, candidateCount - 1);
 
             for (int c = 0; c < candidateCount && count < MaxGhostsPerPacket; c++)
             {
-                uint netId = _candidates[c].NetId;
+                uint netId = cs.Candidates[c].NetId;
                 int slot = _slotByNetId[netId];
                 int owner = OwnerOf(slot);
                 int before = writer.BitsWritten;
@@ -398,7 +400,6 @@ namespace CodexNetworking.Sync.StateSync
             writer.Seek(countPosition);
             writer.WriteBits((uint)count, 16);
             writer.Seek(end);
-            cs.StagedPending = true;
             return writer.Flush();
         }
 
@@ -418,6 +419,8 @@ namespace CodexNetworking.Sync.StateSync
         public void DiscardStaged(int client)
         {
             ClientState cs = _clients[client];
+            if (!cs.StagedPending)
+                return;
             cs.StagedPending = false;
             cs.SentIdCursor = cs.StagedStart;
         }

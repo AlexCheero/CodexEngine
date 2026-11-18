@@ -1,4 +1,6 @@
 using System;
+using System.Runtime.ExceptionServices;
+using System.Threading;
 using CodexECS;
 using CodexNetworking.History;
 using CodexNetworking.Serialization;
@@ -55,6 +57,42 @@ namespace CodexNetworking.Sync.StateSync
         private readonly sbyte[] _lead;
         private readonly byte[] _scratch;
         private readonly byte[] _eventScratch;
+        private readonly SnapshotPacket[] _packets;
+        private readonly int[] _recipients;
+        private readonly EncodingLane[] _lanes;
+        private readonly object _encodingGate = new object();
+        private int _recipientCount, _laneCount, _remainingLanes;
+        private ExceptionDispatchInfo _encodingError;
+
+        private struct SnapshotPacket
+        {
+            public byte[] Data;
+            public int Budget, Size;
+        }
+
+        private sealed class EncodingLane : IThreadPoolWorkItem
+        {
+            private readonly StateSyncServer<TInput> _server;
+            private readonly int _index;
+
+            public EncodingLane(StateSyncServer<TInput> server, int index)
+            {
+                _server = server;
+                _index = index;
+            }
+
+            public void Execute()
+            {
+                try { _server.EncodeLane(_index); }
+                catch (Exception ex) { Interlocked.CompareExchange(ref _server._encodingError, ExceptionDispatchInfo.Capture(ex), null); }
+                finally
+                {
+                    lock (_server._encodingGate)
+                        if (--_server._remainingLanes == 0)
+                            Monitor.Pulse(_server._encodingGate);
+                }
+            }
+        }
 
         public StateSyncServer(NetConfig netConfig, IUdpSocket socket, IRandomSource random, EcsWorld world, IServerStep<TInput> step,
             SimulationRegistry simulation, ReplicationRegistry replication, StateSyncConfig config)
@@ -77,6 +115,11 @@ namespace CodexNetworking.Sync.StateSync
             _lead = new sbyte[netConfig.MaxClients];
             _scratch = new byte[netConfig.MaxPayloadSize];
             _eventScratch = new byte[config.EventChannel.MaxMessageSize];
+            _packets = new SnapshotPacket[netConfig.MaxClients];
+            _recipients = new int[netConfig.MaxClients];
+            _lanes = new EncodingLane[Math.Min(netConfig.MaxClients, Math.Min(Environment.ProcessorCount, config.SnapshotEncodingLanes))];
+            for (int lane = 0; lane < _lanes.Length; lane++)
+                _lanes[lane] = new EncodingLane(this, lane);
         }
 
         public NetHost Host => _host;
@@ -133,20 +176,74 @@ namespace CodexNetworking.Sync.StateSync
                 return;
             _writer.BeginTick(state, _loop.Tick);
             int congestedBudget = Math.Max(64, (int)(_scratch.Length * _config.CongestedBudgetFraction));
+            _recipientCount = 0;
             for (int client = 0; client < _connected.Length; client++)
             {
                 if (!_connected[client])
                     continue;
                 // A congested link gets a smaller packet; the priority accumulator spreads the rest over later ticks.
-                int budget = (_host.IsCongested(client) ? congestedBudget : _scratch.Length) - 1;
-                _scratch[0] = StateSyncPacket.Primary;
-                int size = _writer.WriteSnapshot(client, _loop.History, _lead[client], new Span<byte>(_scratch, 1, budget));
-                if (size == 0)
+                _recipients[_recipientCount++] = client;
+                ref SnapshotPacket packet = ref _packets[client];
+                packet.Data ??= new byte[_scratch.Length];
+                packet.Budget = (_host.IsCongested(client) ? congestedBudget : _scratch.Length) - 1;
+            }
+            _laneCount = Math.Min(_recipientCount, _lanes.Length);
+            if (_laneCount == 0)
+                return;
+            try
+            {
+                EncodeSnapshots();
+                SendEncodedPackets();
+            }
+            catch
+            {
+                for (int index = 0; index < _recipientCount; index++)
+                    _writer.DiscardStaged(_recipients[index]);
+                throw;
+            }
+        }
+
+        private void EncodeSnapshots()
+        {
+            if (_laneCount == 1)
+            {
+                EncodeLane(0);
+                return;
+            }
+            _encodingError = null;
+            _remainingLanes = _laneCount;
+            for (int lane = 1; lane < _laneCount; lane++)
+                ThreadPool.UnsafeQueueUserWorkItem(_lanes[lane], preferLocal: false);
+            _lanes[0].Execute();
+            lock (_encodingGate)
+                while (_remainingLanes != 0)
+                    Monitor.Wait(_encodingGate);
+            _encodingError?.Throw();
+        }
+
+        private void SendEncodedPackets()
+        {
+            for (int index = 0; index < _recipientCount; index++)
+            {
+                int client = _recipients[index];
+                ref SnapshotPacket packet = ref _packets[client];
+                if (packet.Size == 0)
                     continue;
-                if (_host.TrySend(client, new ReadOnlySpan<byte>(_scratch, 0, size + 1), out ushort sequence))
+                if (_host.TrySend(client, new ReadOnlySpan<byte>(packet.Data, 0, packet.Size + 1), out ushort sequence))
                     _writer.OnPacketSent(client, sequence);
                 else
                     _writer.DiscardStaged(client);
+            }
+        }
+
+        private void EncodeLane(int lane)
+        {
+            for (int index = lane; index < _recipientCount; index += _laneCount)
+            {
+                int client = _recipients[index];
+                ref SnapshotPacket packet = ref _packets[client];
+                packet.Data[0] = StateSyncPacket.Primary;
+                packet.Size = _writer.WriteSnapshot(client, _loop.History, _lead[client], new Span<byte>(packet.Data, 1, packet.Budget));
             }
         }
 

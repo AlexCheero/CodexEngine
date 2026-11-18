@@ -9,6 +9,10 @@ namespace CodexNetworking.Sync.StateSync
         /// <summary>Server: ticks between snapshots to each client (1 = every tick).</summary>
         public int SnapshotInterval = 1;
 
+        /// <summary>Maximum encoding lanes including the caller. Above one, serializers, relevance and priority
+        /// callbacks must support concurrent reads of the prepared tick. Transport callbacks stay on the caller.</summary>
+        public int SnapshotEncodingLanes = 1;
+
         /// <summary>Server: snapshots kept for delta baselines and lag compensation. Power of two.</summary>
         public int ServerHistoryCapacity = 64;
 
@@ -51,6 +55,8 @@ namespace CodexNetworking.Sync.StateSync
         {
             if (SnapshotInterval < 1)
                 throw new ArgumentOutOfRangeException(nameof(SnapshotInterval));
+            if (SnapshotEncodingLanes < 1)
+                throw new ArgumentOutOfRangeException(nameof(SnapshotEncodingLanes));
             if (!IsPowerOfTwo(ServerHistoryCapacity) || !IsPowerOfTwo(ClientHistoryCapacity) || !IsPowerOfTwo(InputBufferCapacity))
                 throw new ArgumentOutOfRangeException("capacities must be powers of two");
             if (InputRedundancy < 1 || InputRedundancy > 64)
