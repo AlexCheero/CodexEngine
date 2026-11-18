@@ -39,7 +39,7 @@ public sealed record Geometry(float[] Positions, float[] Normals, float[] Tangen
 public sealed record PlacedEntity(string Name, string Preset, float[] Matrix, string Model, float[] Box, bool Spawn,string SourceName=null);
 public sealed record SceneFile(int Version, PlacedEntity[] Entities, PresetSpec[] Presets)
 {
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 3;
     public static SceneFile Load(string path)
     {
         using var stream=File.OpenRead(path);

@@ -1,5 +1,0 @@
-[gd_resource type="Resource" format=3]
-[ext_resource type="Script" path="res://addons/codex_engine/EntityPreset.cs" id="p"]
-[resource]
-script = ExtResource("p")
-GroupComponents = 1

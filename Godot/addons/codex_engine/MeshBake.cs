@@ -5,13 +5,6 @@ using Godot;
 using Foundry.Content;
 namespace Foundry.Authoring;
 
-public sealed class EntityDraft
-{
-    public float[] Box;
-    public Geometry Model;
-    public bool Spawn;
-}
-
 public static class MeshBake
 {
     public const string ScriptPath = "res://addons/codex_engine/MeshBake.cs";
@@ -20,9 +13,14 @@ public static class MeshBake
     {
         if(File.Exists(destination) && File.GetLastWriteTimeUtc(destination)>File.GetLastWriteTimeUtc(source))return;
         using var img=Image.LoadFromFile(source);
+        BakeTexture(img,destination);
+    }
+
+    public static void BakeTexture(Image img,string destination)
+    {
         if(img.DetectAlpha()==Image.AlphaMode.None)img.Convert(Image.Format.Rgb8);
         if(img.GenerateMipmaps()!=Error.Ok || img.Compress(Image.CompressMode.S3Tc,Image.CompressSource.Generic)!=Error.Ok)
-            throw new InvalidDataException("Cannot encode texture "+source);
+            throw new InvalidDataException("Cannot encode texture "+destination);
         var format=img.GetFormat();
         int block=format switch{Image.Format.Dxt1=>1,Image.Format.Dxt5=>5,Image.Format.Dxt3=>3,_=>throw new InvalidDataException("Unexpected block format "+format)};
         byte[] bytes=img.GetData();int levels=img.GetMipmapCount()+1;
@@ -42,14 +40,14 @@ public static class MeshBake
         [t.Basis.X.X,t.Basis.X.Y,t.Basis.X.Z,0, t.Basis.Y.X,t.Basis.Y.Y,t.Basis.Y.Z,0,
          t.Basis.Z.X,t.Basis.Z.Y,t.Basis.Z.Z,0, t.Origin.X,t.Origin.Y,t.Origin.Z,1];
 
-    public static Geometry Read(Node3D root)
+    public static Geometry Read(Node3D root, Transform3D localTransform, ModelTextures textures)
     {
         var positions = new List<float>();
         var normals = new List<float>();
         var colors = new List<uint>(); var tangents=new List<float>(); var uvs=new List<float>();
         var indices = new List<int>();
         var surfaces = new List<DrawSurface>();
-        Visit(root, Transform3D.Identity);
+        Visit(root, localTransform);
         if (indices.Count == 0) throw new InvalidDataException($"Empty model {root.Name}");
         return new(positions.ToArray(), normals.ToArray(), tangents.ToArray(), uvs.ToArray(), colors.ToArray(), indices.ToArray(),surfaces.ToArray());
 
@@ -82,8 +80,7 @@ public static class MeshBake
                     if (faces.Length == 0)
                         for (int i = 0; i < verts.Length; i++) indices.Add(first + i);
                     else foreach (int index in faces) indices.Add(first + index);
-                    string path=material?.AlbedoTexture?.ResourcePath ?? "";
-                    surfaces.Add(new(start,indices.Count-start,Path.GetFileName(path),material?.Transparency == BaseMaterial3D.TransparencyEnum.AlphaScissor ? material.AlphaScissorThreshold : 0));
+                    surfaces.Add(new(start,indices.Count-start,textures.Key(material?.AlbedoTexture),material?.Transparency == BaseMaterial3D.TransparencyEnum.AlphaScissor ? material.AlphaScissorThreshold : 0));
                 }
             }
             foreach (var child in n.GetChildren())
