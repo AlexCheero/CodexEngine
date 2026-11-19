@@ -14,10 +14,12 @@ public sealed class SurfaceMaterial
     public string Mask { get; init; } = StaticMeshRenderer.PlainMask;
     public string Glow { get; init; } = StaticMeshRenderer.NoGlow;
     /// <summary>
-    /// Scales for the mask's metalness and smoothness, the strength of the normal map, and one or zero
-    /// for whether the surface mirrors its surroundings.
+    /// Scales for the mask's metalness and smoothness, the strength of the normal map, and which specular
+    /// light the surface takes: two if it mirrors its surroundings, plus one if it shows lights' highlights.
+    /// Unity's Simple Lit has no reflections and a highlight only when switched on.
     /// </summary>
-    public Vector4 Factors { get; init; } = new(0, 0, 1, 1);
+    public Vector4 Factors { get; init; } = new(0, 0, 1, Specular(true, true));
+    public static float Specular(bool reflections, bool highlights) => (reflections ? 2 : 0) + (highlights ? 1 : 0);
     public Vector3 Emission { get; init; }
     /// <summary>Drawn over the opaque scene by its alpha, without writing depth.</summary>
     public bool Blend { get; init; }
@@ -34,7 +36,7 @@ public sealed class SurfaceMaterials
 {
     sealed record Entry(string name, string texture, float[] tint, string normal, float bump, string mask,
         float metallic, float smoothness, string glow, float[] emission, bool blend, string[] models,
-        bool? reflections);
+        bool? reflections, bool? highlights);
     sealed record Library(Entry[] materials);
     sealed record Candidate(Vector4 Tint, SurfaceMaterial Material, HashSet<string> Models, int Maps, float Show);
 
@@ -58,7 +60,7 @@ public sealed class SurfaceMaterials
                 Mask = e.mask.Length > 0 ? e.mask : StaticMeshRenderer.PlainMask,
                 // A glow colour without a map lights the whole surface.
                 Glow = e.glow.Length > 0 ? e.glow : emission == Vector3.Zero ? StaticMeshRenderer.NoGlow : "",
-                Factors = new Vector4(e.metallic, e.smoothness, e.bump, e.reflections == false ? 0 : 1),
+                Factors = new Vector4(e.metallic, e.smoothness, e.bump, SurfaceMaterial.Specular(e.reflections != false, e.highlights != false)),
                 Emission = emission,
                 Blend = e.blend
             };
