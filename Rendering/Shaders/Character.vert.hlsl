@@ -22,6 +22,7 @@ SurfaceVertex CharacterVertex(SkinInput v)
     output.normalWS = normalize(mul(normal, (float3x3)World));
     output.tangentWS=0;
     output.color=Tint;
+    output.indirect=0;
     output.uv = v.uv;
     return output;
 }

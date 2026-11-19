@@ -13,13 +13,14 @@ internal struct SurfacePoint : IVertexType
     public Vector3 Position,Normal;
     public Vector4 Tangent;
     public Vector2 Uv;
-    public Color Color;
+    public Color Color,Indirect;
     internal static readonly VertexDeclaration Layout=new(
         new VertexElement(0,VertexElementFormat.Vector3,VertexElementUsage.Position,0),
         new VertexElement(12,VertexElementFormat.Vector3,VertexElementUsage.Normal,0),
         new VertexElement(24,VertexElementFormat.Vector4,VertexElementUsage.Tangent,0),
         new VertexElement(40,VertexElementFormat.Vector2,VertexElementUsage.TextureCoordinate,0),
-        new VertexElement(48,VertexElementFormat.Color,VertexElementUsage.Color,0));
+        new VertexElement(48,VertexElementFormat.Color,VertexElementUsage.Color,0),
+        new VertexElement(52,VertexElementFormat.Color,VertexElementUsage.Color,1));
     VertexDeclaration IVertexType.VertexDeclaration=>Layout;
 }
 
@@ -50,7 +51,8 @@ public sealed class StaticMeshRenderer : IDisposable
                     Vector3 t=new(g.Tangents[k],g.Tangents[k+1],g.Tangents[k+2]);
                     p=Vector3.Transform(p,world);min=Vector3.Min(min,p);max=Vector3.Max(max,p);
                     vertices.Add(new SurfacePoint{Position=p,Normal=Vector3.Normalize(Vector3.TransformNormal(n,normal)),
-                        Tangent=new(Vector3.Normalize(Vector3.TransformNormal(t,world)),g.Tangents[k+3]),Uv=new(g.Uvs[i*2],g.Uvs[i*2+1]),Color=new Color{PackedValue=g.Colors[i]}});
+                        Tangent=new(Vector3.Normalize(Vector3.TransformNormal(t,world)),g.Tangents[k+3]),Uv=new(g.Uvs[i*2],g.Uvs[i*2+1]),
+                        Color=new Color{PackedValue=g.Colors[i]}});
                 }
                 foreach(var s in g.Surfaces)
                 {
@@ -65,16 +67,45 @@ public sealed class StaticMeshRenderer : IDisposable
                 spans.Add(new(indices.Count,faces.Count/3,owner.Texture(material.Item1),material.Item2));
                 indices.AddRange(faces);
             }
-            try
-            {
-                Vertices = new VertexBuffer(owner.gpu, SurfacePoint.Layout, vertices.Count, BufferUsage.WriteOnly);
-                Vertices.SetData(vertices.ToArray());
-                Indices = new IndexBuffer(owner.gpu, IndexElementSize.ThirtyTwoBits, indices.Count, BufferUsage.WriteOnly);
-                Indices.SetData(indices.ToArray());
-            }
-            catch { Dispose(); throw; }
+            (Vertices,Indices)=Upload(owner.gpu,vertices.ToArray(),indices.ToArray());
             Spans=spans.ToArray();
             Bounds=BoundingSphere.CreateFromBoundingBox(new(min,max));
+        }
+        internal Batch(StaticMeshRenderer owner,BakedSceneLight light)
+        {
+            // The baker has already transformed the vertices and grouped every material.
+            var mesh=light.Mesh;
+            var vertices=new SurfacePoint[mesh.Colors.Length];
+            var min=new Vector3(float.MaxValue);
+            var max=new Vector3(float.MinValue);
+            for(int i=0;i<vertices.Length;i++)
+            {
+                int j=3*i,k=4*i;
+                ref var v=ref vertices[i];
+                v.Position=new(mesh.Positions[j],mesh.Positions[j+1],mesh.Positions[j+2]);
+                v.Normal=new(mesh.Normals[j],mesh.Normals[j+1],mesh.Normals[j+2]);
+                v.Tangent=new(mesh.Tangents[k],mesh.Tangents[k+1],mesh.Tangents[k+2],mesh.Tangents[k+3]);
+                v.Uv=new(mesh.Uvs[2*i],mesh.Uvs[2*i+1]);
+                v.Color.PackedValue=mesh.Colors[i];
+                v.Indirect.PackedValue=light.SurfaceLight[i];
+                min=Vector3.Min(min,v.Position); max=Vector3.Max(max,v.Position);
+            }
+            Bounds=BoundingSphere.CreateFromBoundingBox(new(min,max));
+            Spans=Array.ConvertAll(mesh.Surfaces,s=>new Span(s.Start,s.Count/3,owner.Texture(s.Texture),s.Cutoff));
+            (Vertices,Indices)=Upload(owner.gpu,vertices,mesh.Indices);
+        }
+        static (VertexBuffer,IndexBuffer) Upload(GraphicsDevice gpu,SurfacePoint[] vertices,int[] indices)
+        {
+            var vb=new VertexBuffer(gpu,SurfacePoint.Layout,vertices.Length,BufferUsage.WriteOnly);
+            IndexBuffer ib=null;
+            try
+            {
+                vb.SetData(vertices);
+                ib=new IndexBuffer(gpu,IndexElementSize.ThirtyTwoBits,indices.Length,BufferUsage.WriteOnly);
+                ib.SetData(indices);
+                return (vb,ib);
+            }
+            catch { vb.Dispose(); ib?.Dispose(); throw; }
         }
         public void Dispose(){Vertices?.Dispose();Indices?.Dispose();}
     }
@@ -112,6 +143,7 @@ public sealed class StaticMeshRenderer : IDisposable
 
     /// <summary>Combine meshes by material in world or model space. The caller owns the resulting GPU buffers.</summary>
     public Batch CreateBatch(IEnumerable<(Geometry Geometry, Matrix World)> meshes) => new(this, meshes);
+    public Batch CreateBatch(BakedSceneLight light) => new(this,light);
 
     public Batch LoadModel(string path) => CreateBatch([(Geometry.Read(path), Matrix.Identity)]);
 

@@ -8,6 +8,7 @@ SurfaceVertex ProjectMesh(MeshVertex input)
     output.tangentWS = float4(normalize(mul(input.tangent.xyz,(float3x3)World)),input.tangent.w);
     output.uv = input.uv;
     output.color = input.color;
+    output.indirect = input.indirect.rgb;
     return output;
 }
 SurfaceVertex StaticVertex(MeshVertex input) { return ProjectMesh(input); }

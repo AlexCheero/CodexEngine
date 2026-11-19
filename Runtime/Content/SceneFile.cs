@@ -15,6 +15,11 @@ public sealed record Geometry(float[] Positions, float[] Normals, float[] Tangen
     {
         using var stream = File.Create(path);
         using var w = new BinaryWriter(stream);
+        Write(w);
+    }
+    public void Write(BinaryWriter w)
+    {
+        var stream = w.BaseStream;
         w.Write(Signature);
         w.Write(Colors.Length);
         w.Write(Indices.Length);
@@ -27,7 +32,12 @@ public sealed record Geometry(float[] Positions, float[] Normals, float[] Tangen
     {
         using var stream = File.OpenRead(path);
         using var r = new BinaryReader(stream);
-        if (r.ReadInt32() != Signature) throw new InvalidDataException("Rebake this model in Godot: " + path);
+        return Read(r);
+    }
+    public static Geometry Read(BinaryReader r)
+    {
+        var stream = r.BaseStream;
+        if (r.ReadInt32() != Signature) throw new InvalidDataException("Rebake this model in Godot.");
         int count = r.ReadInt32(), indices = r.ReadInt32(), surfaces = r.ReadInt32();
         var parts = new DrawSurface[surfaces];
         for(int i=0;i<parts.Length;i++) parts[i]=new(r.ReadInt32(),r.ReadInt32(),r.ReadString(),r.ReadSingle());
