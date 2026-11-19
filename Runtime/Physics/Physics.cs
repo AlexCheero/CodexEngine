@@ -30,6 +30,45 @@ public partial class CollisionWorld
         Sweep(CapsuleProbe(a,b,radius),direction,distance,mask,triggers,out hit);
     public bool CheckCapsule(Vector3 a,Vector3 b,float radius,int mask,QueryTriggerInteraction triggers)=>
         Overlap(CapsuleProbe(a,b,radius),mask,triggers);
+    // Borrow the live body's precise primitive or compound, including its center-of-mass offset.
+    // Retain the shape across the query so a query never holds a body lock while visiting other bodies.
+    private Shape RetainBodyShape(RigidBody body,Vector3 offset,out Probe probe)
+    {
+        using var locked=BodyLockRead.Create(system.GetBodyLockInterface(),body.Id);
+        var native=locked.GetBody();
+        var shape=native.GetShape();
+        shape.AddRef();
+        probe=new Probe(shape,native.GetCenterOfMassTransform()*float4x4.CreateTranslation(Native(offset)));
+        return shape;
+    }
+
+    internal bool CastBody(RigidBody body,Vector3 offset,Vector3 direction,float distance,int mask,out RaycastHit hit)
+    {
+        using var shape=RetainBodyShape(body,offset,out var probe);
+        var omit=scratch.Value.Exclusion;
+        omit.Id=body.Id;
+        if(query.CastShapeClosest(probe.Cast(direction.normalized*distance),sweepSettings,float3.Zero,out var result,
+            objectLayerFilter:Filter(mask,QueryTriggerInteraction.Ignore),bodyFilter:omit))
+        {
+            hit=SweepHit(result,distance);
+            return true;
+        }
+        hit=default;
+        return false;
+    }
+
+    internal int OverlapBodyNonAlloc(RigidBody body,int mask,Collider[] hits)
+    {
+        using var shape=RetainBodyShape(body,Vector3.zero,out var probe);
+        var work=scratch.Value;
+        work.Exclusion.Id=body.Id;
+        if(work.Overlaps.Length<hits.Length)Array.Resize(ref work.Overlaps,hits.Length);
+        int count=(int)query.CollideShape(probe.Shape,float3.One,probe.Pose,overlapSettings,float3.Zero,
+            work.Overlaps.AsSpan(0,hits.Length),out _,objectLayerFilter:Filter(mask,QueryTriggerInteraction.Ignore),bodyFilter:work.Exclusion);
+        for(int i=0;i<count;i++)hits[i]=nodes[work.Overlaps[i].BodyID2];
+        return count;
+    }
+
     private sealed class LayerFilter(int mask, bool triggers) : ManagedObjectLayerFilter
     {
         protected override bool ShouldCollide(ushort layer) =>
@@ -135,6 +174,7 @@ public partial class CollisionWorld
     {
         public readonly Shape Shape;
         public readonly float4x4 Pose;
+        public Probe(Shape shape,float4x4 pose){Shape=shape;Pose=pose;}
         public Probe(Shape shape,Vector3 at,Quaternion q) {
             Shape = shape;
             Pose = float4x4.CreateFromQuaternion(Native(q))*float4x4.CreateTranslation(Native(at));

@@ -54,6 +54,11 @@ public readonly struct RigidBody : IDisposable
     internal uint Id => Collider.Id;
 
     internal RigidBody(CollisionWorld world, Collider collider) { World = world; Collider = collider; }
+    public bool Cast(Vector3 startOffset,Vector3 direction,float distance,int layerMask,out RaycastHit hit)=>
+        World.CastBody(this,startOffset,direction,distance,layerMask,out hit);
+    public int OverlapNonAlloc(int layerMask,Collider[] results)=>World.OverlapBodyNonAlloc(this,layerMask,results);
+    public void SetKinematic(bool value)=>World.Bodies.SetMotionType(Id,value?MotionType.Kinematic:MotionType.Dynamic,Activation.Activate);
+    public void AddImpulse(Vector3 impulse,Vector3 point)=>World.Bodies.AddImpulse(Id,CollisionWorld.Native(impulse),CollisionWorld.Native(point));
     public void MoveKinematic(Vector3 position,Quaternion rotation,float dt)=>
         World.Bodies.MoveKinematic(Id,CollisionWorld.Native(position),CollisionWorld.Native(rotation),dt);
     public void AddImpulse(Vector3 impulse) => World.Bodies.AddImpulse(Id, CollisionWorld.Native(impulse));
