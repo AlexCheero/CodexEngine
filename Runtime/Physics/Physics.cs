@@ -30,16 +30,36 @@ public partial class CollisionWorld
         Sweep(CapsuleProbe(a,b,radius),direction,distance,mask,triggers,out hit);
     public bool CheckCapsule(Vector3 a,Vector3 b,float radius,int mask,QueryTriggerInteraction triggers)=>
         Overlap(CapsuleProbe(a,b,radius),mask,triggers);
-    // Borrow the live body's precise primitive or compound, including its center-of-mass offset.
-    // Retain the shape across the query so a query never holds a body lock while visiting other bodies.
+    // A Jolt BodyInterface shape reference stays alive across the query. Submit queries
+    // against the completed solver snapshot, before changing the body's shape or transform.
     private Shape RetainBodyShape(RigidBody body,Vector3 offset,out Probe probe)
     {
-        using var locked=BodyLockRead.Create(system.GetBodyLockInterface(),body.Id);
-        var native=locked.GetBody();
-        var shape=native.GetShape();
-        shape.AddRef();
-        probe=new Probe(shape,native.GetCenterOfMassTransform()*float4x4.CreateTranslation(Native(offset)));
+        var shape=Bodies.GetShape(body.Id);
+        var pose=Bodies.GetCenterOfMassTransform(body.Id);
+        probe=new Probe(shape,pose*float4x4.CreateTranslation(Native(offset)));
         return shape;
+    }
+
+    internal bool HasSupport(RigidBody body,Vector3 up,float tolerance,float minimumDot,int mask)
+    {
+        up=up.normalized;
+        using var shape=RetainBodyShape(body,up*tolerance,out var probe);
+        var cast=probe.Cast(up*(-2*tolerance));
+        var work=scratch.Value;
+        work.Exclusion.Id=body.Id;
+        var filter=Filter(mask,QueryTriggerInteraction.Ignore);
+        while(true)
+        {
+            int count=(int)query.CastShape(cast,sweepSettings,float3.Zero,work.Sweeps.AsSpan(),out _,
+                objectLayerFilter:filter,bodyFilter:work.Exclusion);
+            for(int i=0;i<count;i++)
+            {
+                var normal=-Managed(work.Sweeps[i].PenetrationAxis).normalized;
+                if(Vector3.Dot(normal,up)>=minimumDot)return true;
+            }
+            if(count<work.Sweeps.Length)return false;
+            Array.Resize(ref work.Sweeps,work.Sweeps.Length*2);
+        }
     }
 
     internal bool CastBody(RigidBody body,Vector3 offset,Vector3 direction,float distance,int mask,out RaycastHit hit)
