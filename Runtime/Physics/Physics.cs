@@ -26,6 +26,10 @@ public partial class CollisionWorld
         Overlaps(CapsuleProbe(a,b,radius),mask,triggers,hits);
     public bool SphereCast(Vector3 at,float radius,Vector3 direction,out RaycastHit hit,float distance,int mask,QueryTriggerInteraction triggers)=>
         Sweep(SphereProbe(at,radius),direction,distance,mask,triggers,out hit);
+    public bool CapsuleCast(Vector3 a,Vector3 b,float radius,Vector3 direction,out RaycastHit hit,float distance,int mask,QueryTriggerInteraction triggers)=>
+        Sweep(CapsuleProbe(a,b,radius),direction,distance,mask,triggers,out hit);
+    public bool CheckCapsule(Vector3 a,Vector3 b,float radius,int mask,QueryTriggerInteraction triggers)=>
+        Overlap(CapsuleProbe(a,b,radius),mask,triggers);
     private sealed class LayerFilter(int mask, bool triggers) : ManagedObjectLayerFilter
     {
         protected override bool ShouldCollide(ushort layer) =>

@@ -27,10 +27,9 @@ public sealed class CharacterMotor : IDisposable
         this.world=world;this.layers=layers;this.step=step;halfHeight=height*.5f;
         broad=BroadPhaseLayerFilter.Create();bodies=BodyFilter.Create();shapes=ShapeFilter.Create();
         memory=TempAllocatorImpl.Create(2*1024*1024);
-        using var outer=CollisionWorld.Capsule(height-2*padding,radius-padding);
-        using var inner=CollisionWorld.Capsule(height,radius);
+        using var capsule=CollisionWorld.Capsule(height,radius);
         using var settings=CharacterVirtualSettings.Create();
-        settings.SetShape(outer);settings.SetInnerBodyShape(inner);settings.SetInnerBodyLayer(layer);
+        settings.SetShape(capsule);settings.SetInnerBodyShape(capsule);settings.SetInnerBodyLayer(layer);
         settings.SetCharacterPadding(padding);settings.SetMaxSlopeAngle(slopeDegrees*(MathF.PI/180));
         settings.SetSupportingVolume(Plane.Create(new float3(0,1,0),halfHeight-radius));
         character=CharacterVirtual.Create(settings,CollisionWorld.Native(feet+Vector3.up*halfHeight),CollisionWorld.Native(Quaternion.identity),system);

@@ -6,8 +6,28 @@ using Matrix4x4 = System.Numerics.Matrix4x4;
 namespace CodexEngine.Runtime;
 
 public readonly record struct CollisionLayerPair(ushort First, ushort Second);
-public readonly record struct DynamicBodyMotion(bool LockRotation,float GravityFactor,float Friction,float LinearDamping);
+public readonly record struct DynamicBodyMotion(bool LockRotation,float GravityFactor,float Friction,float LinearDamping,float AngularDamping=.05f);
 public readonly record struct CompoundPart(CollisionShape Shape,Vector3 Position,Quaternion Rotation);
+
+/// Identifies members of one articulated object and the pairs of members that may collide.
+public sealed class BodyCollisionGroup : IDisposable
+{
+    private readonly GroupFilterTable filter;
+    private readonly uint id;
+
+    internal BodyCollisionGroup(uint id,int bodyCount)
+    {
+        this.id=id;
+        filter=GroupFilterTable.Create((uint)bodyCount);
+    }
+    public void DisablePair(int first,int second)=>filter.DisableCollision((uint)first,(uint)second);
+    internal void Apply(BodyCreationSettings settings,int member)
+    {
+        using var group=CollisionGroup.Create(filter,id,(uint)member);
+        settings.SetCollisionGroup(group);
+    }
+    public void Dispose()=>filter.Dispose();
+}
 
 /// <summary>Box dimensions are half extents. Capsule height includes both caps.</summary>
 public readonly struct CollisionShape
@@ -34,10 +54,13 @@ public readonly struct RigidBody : IDisposable
     internal uint Id => Collider.Id;
 
     internal RigidBody(CollisionWorld world, Collider collider) { World = world; Collider = collider; }
+    public void MoveKinematic(Vector3 position,Quaternion rotation,float dt)=>
+        World.Bodies.MoveKinematic(Id,CollisionWorld.Native(position),CollisionWorld.Native(rotation),dt);
     public void AddImpulse(Vector3 impulse) => World.Bodies.AddImpulse(Id, CollisionWorld.Native(impulse));
     public void SetAngularVelocity(Vector3 velocity) => World.Bodies.SetAngularVelocity(Id, CollisionWorld.Native(velocity));
     public void SetLinearVelocity(Vector3 velocity) => World.Bodies.SetLinearVelocity(Id, CollisionWorld.Native(velocity));
     public Vector3 LinearVelocity => CollisionWorld.Managed(World.Bodies.GetLinearVelocity(Id));
+    public void SetFriction(float value) => World.Bodies.SetFriction(Id,value);
     public void SetGravityFactor(float factor) => World.Bodies.SetGravityFactor(Id,factor);
     public Matrix4x4 Pose => Matrix4x4.CreateFromQuaternion(Collider.transform.rotation.ToNumerics())
                           * Matrix4x4.CreateTranslation(Collider.transform.position.ToNumerics());
@@ -75,12 +98,19 @@ public partial class CollisionWorld
     private TempAllocatorImpl temporaryMemory;
     private JobSystemThreadPool solverJobs;
     private bool solverInitialized;
+    private int nextCollisionGroup;
+
+    public BodyCollisionGroup CreateBodyCollisionGroup(int size)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(size,1);
+        return new((uint)Interlocked.Increment(ref nextCollisionGroup),size);
+    }
 
     public RigidBody CreateDynamicBody(CollisionShape shape, Vector3 position, Quaternion rotation, float mass, ushort layer, Vector3 velocity,
-        DynamicBodyMotion? motion=null)
+        DynamicBodyMotion? motion=null,BodyCollisionGroup group=null,int member=0)
     {
         using var nativeShape = shape.Create();
-        return CreateDynamicBody(nativeShape,position,rotation,mass,layer,velocity,motion);
+        return CreateDynamicBody(nativeShape,position,rotation,mass,layer,velocity,motion,group,member);
     }
 
     public RigidBody CreateDynamicCompound(ReadOnlySpan<CompoundPart> parts, Vector3 position, Quaternion rotation, float mass,
@@ -102,29 +132,44 @@ public partial class CollisionWorld
     }
 
     private RigidBody CreateDynamicBody(Shape nativeShape,Vector3 position,Quaternion rotation,float mass,ushort layer,
-        Vector3 velocity,DynamicBodyMotion? motion)
+        Vector3 velocity,DynamicBodyMotion? motion,BodyCollisionGroup group=null,int member=0)
     {
         using var settings = BodyCreationSettings.Create(nativeShape, Native(position), Native(rotation), MotionType.Dynamic, layer);
+        group?.Apply(settings,member);
         if(motion is {} m)
         {
             if(m.LockRotation)settings.SetAllowedDOFs(AllowedDOFs.TranslationX|AllowedDOFs.TranslationY|AllowedDOFs.TranslationZ);
             settings.SetGravityFactor(m.GravityFactor);
             settings.SetFriction(m.Friction);
             settings.SetLinearDamping(m.LinearDamping);
+            settings.SetAngularDamping(m.AngularDamping);
         }
         settings.SetOverrideMassProperties(OverrideMassProperties.CalculateInertia);
         using var properties = MassProperties.Create();
         properties.SetMass(mass);
         settings.SetMassPropertiesOverride(properties);
-        uint id = Bodies.CreateAndAddBody(settings, Activation.Activate);
-        var node = new CollisionNode(this, "Rigid body") { layer = layer };
-        node.SetSimulatedPose(position, rotation);
-        var collider = new Collider(this, node, id);
-        collider.DynamicSlot=dynamicColliders.Count;
-        dynamicColliders.Add(collider);
-        var body = new RigidBody(this, collider);
+        var body=TrackMovingBody(settings,position,rotation,layer);
         body.SetLinearVelocity(velocity);
         return body;
+    }
+
+    public RigidBody CreateKinematicBody(CollisionShape shape,Vector3 position,Quaternion rotation,ushort layer,
+        BodyCollisionGroup group=null,int member=0)
+    {
+        using var native=shape.Create();
+        using var settings=BodyCreationSettings.Create(native,Native(position),Native(rotation),MotionType.Kinematic,layer);
+        group?.Apply(settings,member);
+        return TrackMovingBody(settings,position,rotation,layer);
+    }
+
+    private RigidBody TrackMovingBody(BodyCreationSettings settings,Vector3 position,Quaternion rotation,ushort layer)
+    {
+        uint id=Bodies.CreateAndAddBody(settings,Activation.Activate);
+        var node=new CollisionNode(this,"Rigid body"){layer=layer};
+        node.SetSimulatedPose(position,rotation);
+        var collider=new Collider(this,node,id){DynamicSlot=dynamicColliders.Count};
+        dynamicColliders.Add(collider);
+        return new RigidBody(this,collider);
     }
 
     /// <summary>Shared world-space anchor and normalized orthogonal joint axes. Limits are in degrees.</summary>
