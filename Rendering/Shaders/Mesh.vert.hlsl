@@ -1,3 +1,4 @@
+#include "ColorSpace.hlsl"
 SurfaceVertex ProjectMesh(MeshVertex input)
 {
     SurfaceVertex output;
@@ -8,7 +9,8 @@ SurfaceVertex ProjectMesh(MeshVertex input)
     output.tangentWS = float4(normalize(mul(input.tangent.xyz,(float3x3)World)),input.tangent.w);
     output.uv = input.uv;
     output.color = input.color;
-    output.indirect = input.indirect.rgb;
+    // The baked light is stored sRGB-encoded so its dark end keeps its precision.
+    output.indirect = Linear(input.indirect.rgb);
     return output;
 }
 SurfaceVertex StaticVertex(MeshVertex input) { return ProjectMesh(input); }

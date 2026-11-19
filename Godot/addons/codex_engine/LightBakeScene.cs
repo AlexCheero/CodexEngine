@@ -142,7 +142,9 @@ internal sealed class LightBakeScene
     {
         var a=Vertices[f.A];var b=Vertices[f.B];var c=Vertices[f.C];float w=1-u-v;
         var tint=w*Unpack(a.Tint)+u*Unpack(b.Tint)+v*Unpack(c.Tint);
-        return tint*Materials[f.Material].Image.Sample(w*a.Uv+u*b.Uv+v*c.Uv);
+        var color=tint*Materials[f.Material].Image.Sample(w*a.Uv+u*b.Uv+v*c.Uv);
+        // Tints and images are sRGB. Light bounces off the linear reflectance; alpha stays as authored.
+        return new(Linear(color.X),Linear(color.Y),Linear(color.Z),color.W);
     }
     internal void Receiver(Hit hit,Vector3 direction,out Vector3 normal,out Vector3 albedo)
     {
@@ -156,6 +158,10 @@ internal sealed class LightBakeScene
         var f=triangles[hit.Triangle].Face;
         return Vector3.Dot(Vertices[f.A].Normal+Vertices[f.B].Normal+Vertices[f.C].Normal,direction)>0;
     }
+    internal static float Linear(float c)=>c<=.04045f?c/12.92f:MathF.Pow((c+.055f)/1.055f,2.4f);
+    internal static float Encode(float c)=>c<=.0031308f?12.92f*c:1.055f*MathF.Pow(c,1/2.4f)-.055f;
+    /// <summary>Linear light stored sRGB-encoded, so eight bits keep the dark end smooth.</summary>
+    internal static uint PackLight(Vector3 c)=>Pack(new(Encode(Math.Max(c.X,0)),Encode(Math.Max(c.Y,0)),Encode(Math.Max(c.Z,0)),1));
     internal static Vector4 Unpack(uint c)=>new Vector4(c&255,(c>>8)&255,(c>>16)&255,c>>24)/255;
     internal static uint Pack(Vector4 c)
     {

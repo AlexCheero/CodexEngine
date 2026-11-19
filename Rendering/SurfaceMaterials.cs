@@ -41,6 +41,8 @@ public sealed class SurfaceMaterials
     readonly Dictionary<string, List<Candidate>> byTexture = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>A missing file leaves every surface plain.</summary>
+    static float Decode(float c) => MathF.Pow(Math.Max(c, 0), 2.2f);
+
     public static SurfaceMaterials Load(string path)
     {
         var materials = new SurfaceMaterials();
@@ -48,7 +50,8 @@ public sealed class SurfaceMaterials
         var library = JsonSerializer.Deserialize<Library>(File.ReadAllBytes(path));
         foreach (var e in library.materials)
         {
-            var emission = new Vector3(e.emission[0], e.emission[1], e.emission[2]);
+            // The library keeps emission in display space. Surfaces add it as linear light.
+            var emission = new Vector3(Decode(e.emission[0]), Decode(e.emission[1]), Decode(e.emission[2]));
             var material = new SurfaceMaterial
             {
                 Normal = e.normal.Length > 0 ? e.normal : StaticMeshRenderer.FlatNormal,

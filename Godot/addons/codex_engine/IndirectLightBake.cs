@@ -13,14 +13,14 @@ public static class IndirectLightBake
     const float Bias=.014f;
 
     public static void Write(string folder,string map,IReadOnlyList<PlacedEntity> entities,
-        Vector3 sunDirection,Vector3 sunColor,Vector3 skyColor,Vector2 detailMin,Vector2 detailMax)
+        Vector3 sunDirection,Vector3 sunColor,Vector3 skyColor,Vector3 horizonColor,Vector2 detailMin,Vector2 detailMax)
     {
         string path=Path.Combine(folder,map+".brgi");
         using var hash=IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        hash.AppendData("diffuse-bake-2"u8);
+        hash.AppendData("diffuse-bake-3-linear"u8);
         AddVector(new(detailMin,VertexSpacing)); AddVector(new(detailMax,DistantSpacing));
         AddVector(new(ProbeSpacing,Bias,0)); AddVector(new(SurfaceRays,ProbeRays,0));
-        AddVector(sunDirection);AddVector(sunColor);AddVector(skyColor);
+        AddVector(sunDirection);AddVector(sunColor);AddVector(skyColor);AddVector(horizonColor);
         var textureNames=new SortedSet<string>(StringComparer.Ordinal);
         foreach(var e in entities)
         {
@@ -40,13 +40,13 @@ public static class IndirectLightBake
             if(BakedSceneLight.Matches(r,inputHash))return;
         }
         var scene=new LightBakeScene(folder,entities);
-        var solver=new Solver(scene,Vector3.Normalize(sunDirection),sunColor,skyColor);
+        var solver=new Solver(scene,Vector3.Normalize(sunDirection),sunColor,skyColor,horizonColor);
         var mesh=Refine(scene,detailMin,detailMax);
         var surface=new uint[mesh.Colors.Length];
         var parallel=new ParallelOptions{MaxDegreeOfParallelism=Math.Clamp(Environment.ProcessorCount-2,1,12)};
         Parallel.For(0,surface.Length,parallel,i=>{
             var p=At(mesh.Positions,i);var n=At(mesh.Normals,i);
-            surface[i]=LightBakeScene.Pack(new(solver.Surface(p,n),1));
+            surface[i]=LightBakeScene.PackLight(solver.Surface(p,n));
         });
         // Dynamic objects sample the playable area. Distant static scenery has its own surface bake.
         var origin=new Vector3(detailMin.X,scene.Min.Y+ProbeSpacing*.25f,detailMin.Y);
@@ -111,7 +111,8 @@ public static class IndirectLightBake
         }
     }
 
-    sealed class Solver(LightBakeScene scene,Vector3 sun,Vector3 sunColor,Vector3 sky)
+    // Light is linear radiance. The sky's colour runs from the horizon to the zenith, like Unity's three-colour ambient.
+    sealed class Solver(LightBakeScene scene,Vector3 sun,Vector3 sunColor,Vector3 sky,Vector3 horizon)
     {
         static readonly Vector3[] Hemisphere=CosineDirections(SurfaceRays);
         static readonly Vector3[] SkyRays=CosineDirections(131);
@@ -127,10 +128,11 @@ public static class IndirectLightBake
         {
             u=Vector3.Normalize(Vector3.Cross(MathF.Abs(n.Y)<.95f?Vector3.UnitY:Vector3.UnitX,n));v=Vector3.Cross(n,u);
         }
+        Vector3 Sky(float up)=>Vector3.Lerp(horizon,sky,up);
         Vector3 Incident(Vector3 origin,Vector3 dir,int ray,out bool inside)
         {
             inside=false;
-            if(!scene.Trace(origin,dir,false,out var hit))return dir.Y>0?sky:Vector3.Zero;
+            if(!scene.Trace(origin,dir,false,out var hit))return dir.Y>0?Sky(dir.Y):Vector3.Zero;
             inside=scene.BackFacing(hit,dir);
             scene.Receiver(hit,dir,out var n,out var albedo);
             var at=origin+dir*hit.T+n*Bias;
@@ -139,7 +141,7 @@ public static class IndirectLightBake
             // One cosine-weighted sky visibility sample at the reflecting surface. A second hit ends the path.
             Basis(n,out var u,out var v);
             var sample=SkyRays[ray*47%SkyRays.Length];var toSky=u*sample.X+v*sample.Y+n*sample.Z;
-            if(toSky.Y>0 && !scene.Trace(at,toSky,true,out _))incoming+=sky;
+            if(toSky.Y>0 && !scene.Trace(at,toSky,true,out _))incoming+=Sky(toSky.Y);
             return albedo*incoming;
         }
         internal Vector3 Surface(Vector3 p,Vector3 n)
@@ -163,7 +165,7 @@ public static class IndirectLightBake
                     int face=axis*2+(d[axis]<0?1:0);float w=MathF.Abs(d[axis]);sum[face]+=radiance*w;weight[face]+=w;
                 }
             }
-            for(int f=0;f<6;f++)packed[f]=LightBakeScene.Pack(new(sum[f]/weight[f],1));
+            for(int f=0;f<6;f++)packed[f]=LightBakeScene.PackLight(sum[f]/weight[f]);
             return backs<Sphere.Length*.48f;
         }
     }
