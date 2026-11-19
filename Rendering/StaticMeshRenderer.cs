@@ -4,7 +4,11 @@ using Foundry.Content;
 using System.Collections.Generic;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
+using System.Collections.Concurrent;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 namespace CodexEngine.Rendering;
 
 [StructLayout(LayoutKind.Sequential,Pack=4)]
@@ -26,8 +30,20 @@ internal struct SurfacePoint : IVertexType
 
 public sealed class StaticMeshRenderer : IDisposable
 {
-    internal sealed record Span(int Start,int Primitives,Texture2D Map,float Cutoff,Texture2D Normal,Texture2D Mask,
-        Texture2D Glow,Vector4 Factors,Vector3 Emission,bool Blend);
+    internal sealed record Span(int Start,int Primitives,Texture2D Map,float Cutoff,MapSlot Normal,MapSlot Mask,
+        MapSlot Glow,Vector4 Factors,Vector3 Emission,bool Blend);
+    /// <summary>
+    /// One material map, shared by every surface that uses it. Until a worker has read the file and
+    /// <see cref="StreamMaps"/> has uploaded it, surfaces draw its built-in stand-in, so a model or fighter
+    /// seen for the first time never waits on its maps.
+    /// </summary>
+    public sealed class MapSlot
+    {
+        internal readonly string Name;
+        internal Texture2D Current;
+        internal bool Ready;
+        internal MapSlot(string name,Texture2D current,bool ready){Name=name;Current=current;Ready=ready;}
+    }
     /// <summary>Collects triangles by base texture, cutoff and authored material. Opaque spans come first.</summary>
     sealed class Grouping(StaticMeshRenderer owner,string model)
     {
@@ -60,8 +76,7 @@ public sealed class StaticMeshRenderer : IDisposable
                     var m=key.Material;
                     if(m.Blend!=blend)continue;
                     spans.Add(new(indices.Count,faces.Count/3,owner.Texture(key.Texture),key.Cutoff,
-                        owner.Texture(owner.ReadMap(m.Normal,FlatNormal)),owner.Texture(owner.ReadMap(m.Mask,PlainMask)),
-                        owner.Texture(owner.ReadMap(m.Glow,NoGlow)),m.Factors,m.Emission,m.Blend));
+                        owner.Map(m.Normal,FlatNormal),owner.Map(m.Mask,PlainMask),owner.Map(m.Glow,NoGlow),m.Factors,m.Emission,m.Blend));
                     indices.AddRange(faces);
                 }
             return (indices.ToArray(),spans.ToArray());
@@ -155,6 +170,13 @@ public sealed class StaticMeshRenderer : IDisposable
     // Absent from effects that shade the base texture alone.
     readonly EffectParameter normalMap, maskMap, glowMap, factors, emission;
     readonly SurfaceMaterials materials;
+    // Map streaming. The game thread owns the slots; one worker reads the requested files in order.
+    readonly Dictionary<string, MapSlot> maps = new();
+    readonly List<MapSlot> unready = new();
+    readonly ConcurrentQueue<MapSlot> requested = new();
+    readonly ConcurrentQueue<(MapSlot Slot, TextureData Data, ExceptionDispatchInfo Error)> arrived = new();
+    int reading;
+    readonly ConcurrentDictionary<string, Lazy<TextureData>> shared = new();
     readonly BlendState blended = new()
     {
         // Glass leaves the eye distance held in the target's alpha to the surface behind it.
@@ -252,13 +274,87 @@ public sealed class StaticMeshRenderer : IDisposable
         return data;
     }
 
-    /// <summary>A material map, or its built-in stand-in while the bake has not produced the file.</summary>
-    public TextureData ReadMap(string name, string standIn)
+    /// <summary>
+    /// The slot for a material map, on the game thread. A map the bake has not produced keeps its built-in
+    /// stand-in; any other is read in the background and arrives through <see cref="StreamMaps"/>.
+    /// </summary>
+    public MapSlot Map(string name, string standIn)
     {
-        bool present = name.Length == 0 || name[0] == '#' ||
-            File.Exists(Path.Combine(textureDirectory, Path.GetFileNameWithoutExtension(name) + ".btex"));
-        return ReadTexture(present ? name : standIn);
+        if (maps.TryGetValue(name, out var slot)) return slot;
+        if (textures.TryGetValue(name, out var existing)) slot = new(name, existing, true);
+        else if (name.Length == 0 || name[0] == '#' ||
+            !File.Exists(Path.Combine(textureDirectory, Path.GetFileNameWithoutExtension(name) + ".btex")))
+            slot = new(name, textures[standIn], true);
+        else
+        {
+            slot = new(name, textures[standIn], false);
+            unready.Add(slot);
+            requested.Enqueue(slot);
+            if (Interlocked.CompareExchange(ref reading, 1, 0) == 0) Task.Run(ReadRequested);
+        }
+        maps.Add(name, slot);
+        return slot;
     }
+
+    void ReadRequested()
+    {
+        do
+        {
+            while (requested.TryDequeue(out var slot))
+            {
+                try { arrived.Enqueue((slot, ReadTexture(slot.Name), null)); }
+                catch (Exception e) { arrived.Enqueue((slot, null, ExceptionDispatchInfo.Capture(e))); }
+            }
+            Volatile.Write(ref reading, 0);
+            // Picks up a request queued after the last dequeue but before the flag cleared.
+        } while (!requested.IsEmpty && Interlocked.CompareExchange(ref reading, 1, 0) == 0);
+    }
+
+    /// <summary>
+    /// Uploads maps the worker has read, on the game thread once a frame. Stops once the frame's uploads
+    /// reach <paramref name="byteBudget"/>, so one frame takes about one large map at most.
+    /// </summary>
+    public void StreamMaps(long byteBudget = 4 << 20)
+    {
+        long spent = 0;
+        while (spent < byteBudget && arrived.TryDequeue(out var item))
+        {
+            if (item.Slot.Ready) continue;
+            item.Error?.Throw();
+            spent += Resolve(item.Slot, item.Data);
+        }
+        if (unready.Count > 64) unready.RemoveAll(s => s.Ready);
+    }
+
+    /// <summary>Reads and uploads every map still on its stand-in, for loading screens.</summary>
+    public void LoadMapsNow()
+    {
+        foreach (var slot in unready)
+            if (!slot.Ready) Resolve(slot, ReadTexture(slot.Name));
+        unready.Clear();
+    }
+
+    long Resolve(MapSlot slot, TextureData data)
+    {
+        long bytes = 0;
+        if (!textures.ContainsKey(data.Name)) foreach (var mip in data.Mips) bytes += mip.Length;
+        slot.Current = Texture(data);
+        slot.Ready = true;
+        return bytes;
+    }
+
+    /// <summary>
+    /// <see cref="ReadTexture"/> once per name, shared by every asset worker. The bytes are let go
+    /// once <see cref="Texture(TextureData)"/> has uploaded them.
+    /// </summary>
+    public TextureData ReadShared(string name)
+    {
+        if (name.Length == 0 || name[0] == '#') return ReadTexture(name);
+        return shared.GetOrAdd(name, n => new Lazy<TextureData>(() => ReadTexture(n))).Value;
+    }
+
+    /// <summary>Whether a texture is already on the GPU, so <see cref="Texture(TextureData)"/> costs nothing.</summary>
+    public bool Uploaded(string name) => textures.ContainsKey(name);
 
     public Texture2D Texture(TextureData data)
     {
@@ -267,7 +363,10 @@ public sealed class StaticMeshRenderer : IDisposable
         try{
             for(int i=0;i<data.Mips.Length;i++){var bytes=data.Mips[i];texture.SetData(i,null,bytes,0,bytes.Length);}
         }catch{texture.Dispose();throw;}
-        textures.Add(data.Name,texture);return texture;
+        textures.Add(data.Name,texture);
+        // Later lookups find the texture by name. Shared reads would otherwise keep the bytes for good.
+        data.Mips = null;
+        return texture;
     }
     public static Matrix MatrixOf(float[] m)=>new(m[0],m[1],m[2],m[3],m[4],m[5],m[6],m[7],m[8],m[9],m[10],m[11],m[12],m[13],m[14],m[15]);
     public void Camera(Matrix view,Matrix projection,Vector3 position)
@@ -300,7 +399,7 @@ public sealed class StaticMeshRenderer : IDisposable
         foreach(var span in batch.Spans){
             if(!every && span.Blend!=blend)continue;
             albedo.SetValue(span.Map);cutoff.SetValue(span.Cutoff);
-            normalMap?.SetValue(span.Normal);maskMap?.SetValue(span.Mask);glowMap?.SetValue(span.Glow);
+            normalMap?.SetValue(span.Normal.Current);maskMap?.SetValue(span.Mask.Current);glowMap?.SetValue(span.Glow.Current);
             factors?.SetValue(span.Factors);emission?.SetValue(span.Emission);
             shader.CurrentTechnique.Passes[0].Apply();
             gpu.DrawIndexedPrimitives(PrimitiveType.TriangleList,0,0,batch.Vertices.VertexCount,span.Start,span.Primitives);

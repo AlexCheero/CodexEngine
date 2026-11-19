@@ -29,7 +29,8 @@ public sealed class SkinnedMeshRenderer : IDisposable
     {
         internal readonly VertexBuffer Vertices;
         internal readonly IndexBuffer Indices;
-        internal readonly Texture2D Map, Normal, Mask, Glow;
+        internal readonly Texture2D Map;
+        internal readonly StaticMeshRenderer.MapSlot Normal, Mask, Glow;
         internal readonly Vector4 Tint;
         internal readonly Vector4 Factors;
         internal readonly Vector3 Emission;
@@ -41,14 +42,14 @@ public sealed class SkinnedMeshRenderer : IDisposable
         public ReadOnlySpan<int> Bones => boneIndices;
         public ReadOnlySpan<Matrix> Bind => inverseBindPoses;
 
-        internal Part(GraphicsDevice gpu, PartData data, Func<StaticMeshRenderer.TextureData, Texture2D> texture)
+        internal Part(GraphicsDevice gpu, PartData data, StaticMeshRenderer surfaces)
         {
             boneIndices = data.Bones;
             inverseBindPoses = data.Bind;
-            Map = texture(data.Texture);
-            Normal = texture(data.Normal);
-            Mask = texture(data.Mask);
-            Glow = texture(data.Glow);
+            Map = surfaces.Texture(data.Texture);
+            Normal = surfaces.Map(data.Material.Normal, StaticMeshRenderer.FlatNormal);
+            Mask = surfaces.Map(data.Material.Mask, StaticMeshRenderer.PlainMask);
+            Glow = surfaces.Map(data.Material.Glow, StaticMeshRenderer.NoGlow);
             Factors = data.Material.Factors;
             Emission = data.Material.Emission;
             Blend = data.Material.Blend;
@@ -116,9 +117,6 @@ public sealed class SkinnedMeshRenderer : IDisposable
         internal int[] Indices, Bones;
         internal Matrix[] Bind;
         internal StaticMeshRenderer.TextureData Texture;
-        internal StaticMeshRenderer.TextureData Normal = StaticMeshRenderer.TextureData.BuiltIn(StaticMeshRenderer.FlatNormal);
-        internal StaticMeshRenderer.TextureData Mask = StaticMeshRenderer.TextureData.BuiltIn(StaticMeshRenderer.PlainMask);
-        internal StaticMeshRenderer.TextureData Glow = StaticMeshRenderer.TextureData.BuiltIn(StaticMeshRenderer.NoGlow);
         internal SurfaceMaterial Material = SurfaceMaterial.Plain;
         internal Vector4 Tint;
         internal float Cutoff;
@@ -127,7 +125,7 @@ public sealed class SkinnedMeshRenderer : IDisposable
 
     /// <summary>
     /// Decodes parts on any thread. With <paramref name="surfaces"/>, each part also takes the authored
-    /// material that shares its base texture and tint, and reads that material's maps.
+    /// material that shares its base texture and tint. Its maps stream in after upload, see <see cref="StaticMeshRenderer.Map"/>.
     /// <paramref name="model"/> names the asset as kind-id for materials that look alike.
     /// </summary>
     public static PartData[] ReadParts(BinaryReader reader, Func<string, long, StaticMeshRenderer.TextureData> readTexture,
@@ -139,13 +137,7 @@ public sealed class SkinnedMeshRenderer : IDisposable
             var data = parts[i] = new PartData();
             data.Texture = readTexture(reader.ReadString(), reader.ReadInt64());
             data.Tint = new Vector4(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
-            if (surfaces != null)
-            {
-                data.Material = surfaces.Materials.Find(data.Texture.Name, data.Tint, model);
-                data.Normal = surfaces.ReadMap(data.Material.Normal, StaticMeshRenderer.FlatNormal);
-                data.Mask = surfaces.ReadMap(data.Material.Mask, StaticMeshRenderer.PlainMask);
-                data.Glow = surfaces.ReadMap(data.Material.Glow, StaticMeshRenderer.NoGlow);
-            }
+            if (surfaces != null) data.Material = surfaces.Materials.Find(data.Texture.Name, data.Tint, model);
             data.Cutoff = reader.ReadSingle();
             data.Bones = new int[reader.ReadInt32()];
             data.Bind = new Matrix[data.Bones.Length];
@@ -169,13 +161,25 @@ public sealed class SkinnedMeshRenderer : IDisposable
         return parts;
     }
 
-    public Part[] UploadParts(PartData[] data, Func<StaticMeshRenderer.TextureData, Texture2D> texture)
+    /// <summary>
+    /// Uploads the first base texture of <paramref name="data"/> not yet on the GPU, on the game thread.
+    /// False once there is none left, when <see cref="UploadParts"/> has only the meshes to upload.
+    /// </summary>
+    public static bool UploadNextTexture(PartData[] data, StaticMeshRenderer surfaces)
+    {
+        foreach (var part in data)
+            if (!surfaces.Uploaded(part.Texture.Name)) { surfaces.Texture(part.Texture); return true; }
+        return false;
+    }
+
+    /// <summary>Uploads parts on the game thread. Base textures and material maps are shared through <paramref name="surfaces"/>.</summary>
+    public Part[] UploadParts(PartData[] data, StaticMeshRenderer surfaces)
     {
         var parts = new Part[data.Length];
         try
         {
             for (int i = 0; i < parts.Length; i++)
-                parts[i] = new Part(gpu, data[i], texture);
+                parts[i] = new Part(gpu, data[i], surfaces);
         }
         catch { foreach (var part in parts) part?.Dispose(); throw; }
         return parts;
@@ -231,9 +235,9 @@ public sealed class SkinnedMeshRenderer : IDisposable
         }
         paletteParameter.SetValue(palette);
         mapParameter.SetValue(part.Map);
-        normalParameter?.SetValue(part.Normal);
-        maskParameter?.SetValue(part.Mask);
-        glowParameter?.SetValue(part.Glow);
+        normalParameter?.SetValue(part.Normal.Current);
+        maskParameter?.SetValue(part.Mask.Current);
+        glowParameter?.SetValue(part.Glow.Current);
         factorsParameter?.SetValue(part.Factors);
         emissionParameter?.SetValue(part.Emission);
         tintParameter.SetValue(part.Tint);
