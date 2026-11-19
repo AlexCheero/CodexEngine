@@ -1,0 +1,18 @@
+config_version=5
+
+[application]
+
+config/name="Codex Editor"
+config/features=PackedStringArray("4.7", "C#", "GL Compatibility")
+
+[dotnet]
+
+project/assembly_name="CodexEditor"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/codex_engine/plugin.cfg")
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"

@@ -1,6 +1,6 @@
 # CodexEngine
 
-CodexEngine is the reusable C# runtime and Godot authoring layer used by FPS Deathmatch. A game checks out this repository as its `Engine` submodule. Open `CodexEngine.sln` to work on runtime code independently, or open the consuming game's Godot C# solution to debug engine and game code together.
+CodexEngine is the reusable C# runtime and Godot authoring layer used by Griefborn and CyberFPS. A game checks out this repository as its `Engine` submodule. Open `CodexEngine.sln` to work on runtime code independently, or open the consuming game's Godot C# solution to debug engine and game code together.
 
 | Directory | Responsibility |
 | --- | --- |
@@ -21,3 +21,10 @@ On Windows x64, build the engine with `dotnet build CodexEngine.sln -c Release` 
 `ScreenSpaceAmbientOcclusion` loads `AmbientOcclusion.fxb`. After drawing the sky, call `BeginOpaque(scene)` with a colour and depth target created with `PreserveContents`. Stock lit materials write ambient RGB and axial view depth to the second colour attachment. Custom materials can use `WriteSurface` in `Rendering/Shaders/AmbientSurface.hlsl` for the same layout. After opaque geometry, call `Apply(projection, radius, strength)` with the active perspective projection and a radius in world units. It restores the scene target for subsequent transparent draws.
 
 `IndirectLightBake.Write` bakes visible skylight and one diffuse bounce from textured static scene geometry. Supply the same sun direction and colours as the player, and the horizontal bounds where moving objects need probes. The resulting `.brgi` contains a world-space colour mesh and six directional irradiance values per probe. Load it with `BakedSceneLight.Read`. Use `StaticMeshRenderer.CreateBatch(light)` to draw the refined surface with vertex irradiance in `COLOR1`, and keep the original scene mesh for shadow casters. For moving objects, create `IrradianceProbes`, call `Bind(material)` and sample `ProbeIrradiance(worldPosition, unitNormal)` from `Rendering/Shaders/IrradianceProbes.hlsl`. It reserves pixel sampler 2.
+
+
+## Codex Editor
+
+Run `Edit.cmd` on Windows to open the standalone Godot .NET authoring project. The launcher installs the pinned upstream Godot .NET distribution and builds the editor scripts. The Codex editor customization lives under `Godot/addons/codex_engine` and includes the Entity Presets dock, the component inspector, and the content baking tools.
+
+Projects that embed the workbench enable `res://addons/codex_engine/plugin.cfg` in their Godot project and store their entity presets in `res://Entities`. A project can set `codex/editor/entity_palette` to its own C# script derived from `EntityWorkbenchPalette` to expose game-specific components.
