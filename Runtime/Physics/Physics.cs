@@ -20,8 +20,8 @@ public partial class CollisionWorld
         Ray(origin,direction,distance,mask,triggers,out hit);
     public int RaycastNonAlloc(Vector3 origin,Vector3 direction,RaycastHit[] hits,float distance,int mask,QueryTriggerInteraction triggers)=>
         Rays(origin,direction,distance,mask,triggers,hits);
-    public int OverlapSphereNonAlloc(Vector3 origin,float radius,Collider[] hits,int mask,QueryTriggerInteraction triggers)=>
-        Overlaps(SphereProbe(origin,radius),mask,triggers,hits);
+    public int OverlapSphereNonAlloc(Vector3 origin,float radius,Collider[] hits,int mask,QueryTriggerInteraction triggers,bool hitBackFaces=false)=>
+        Overlaps(SphereProbe(origin,radius),mask,triggers,hits,hitBackFaces);
     public int OverlapCapsuleNonAlloc(Vector3 a,Vector3 b,float radius,Collider[] hits,int mask,QueryTriggerInteraction triggers)=>
         Overlaps(CapsuleProbe(a,b,radius),mask,triggers,hits);
     public bool SphereCast(Vector3 at,float radius,Vector3 direction,out RaycastHit hit,float distance,int mask,QueryTriggerInteraction triggers)=>
@@ -114,7 +114,7 @@ public partial class CollisionWorld
     private readonly ThreadLocal<Scratch> scratch = new(() => new Scratch(),true);
     private readonly ConcurrentDictionary<(int,QueryTriggerInteraction),LayerFilter> filters = new();
     private RayCastSettings raySettings;
-    private CollideShapeSettings overlapSettings;
+    private CollideShapeSettings overlapSettings,twoSidedOverlaps;
     private ShapeCastSettings sweepSettings;
 
     private void CreateQuerySettings()
@@ -122,6 +122,8 @@ public partial class CollisionWorld
         raySettings = RayCastSettings.Create();
         raySettings.SetTreatConvexAsSolid(false);
         overlapSettings = CollideShapeSettings.Create();
+        twoSidedOverlaps=CollideShapeSettings.Create();
+        twoSidedOverlaps.SetBackFaceMode(BackFaceMode.CollideWithBackFaces);
         sweepSettings = ShapeCastSettings.Create();
     }
     private void DisposeQuerySettings()
@@ -129,7 +131,7 @@ public partial class CollisionWorld
         foreach (var s in scratch.Values) s.Dispose();
         scratch.Dispose();
         foreach (var f in filters.Values) f.Dispose();
-        raySettings.Dispose(); overlapSettings.Dispose(); sweepSettings.Dispose();
+        raySettings.Dispose(); overlapSettings.Dispose(); twoSidedOverlaps.Dispose(); sweepSettings.Dispose();
     }
     private LayerFilter Filter(int mask,QueryTriggerInteraction triggers)
     {
@@ -235,11 +237,12 @@ public partial class CollisionWorld
         separation=default;
         return false;
     }
-    internal int Overlaps(in Probe probe,int mask,QueryTriggerInteraction triggers,Collider[] hits)
+    internal int Overlaps(in Probe probe,int mask,QueryTriggerInteraction triggers,Collider[] hits,bool hitBackFaces=false)
     {
         ref var results=ref scratch.Value.Overlaps;
         if(results.Length<hits.Length)Array.Resize(ref results,hits.Length);
-        int count=(int)query.CollideShape(probe.Shape,float3.One,probe.Pose,overlapSettings,float3.Zero,results.AsSpan(0,hits.Length),out _,objectLayerFilter:Filter(mask,triggers));
+        var settings=hitBackFaces?twoSidedOverlaps:overlapSettings;
+        int count=(int)query.CollideShape(probe.Shape,float3.One,probe.Pose,settings,float3.Zero,results.AsSpan(0,hits.Length),out _,objectLayerFilter:Filter(mask,triggers));
         for(int i=0;i<count;i++) hits[i]=nodes[results[i].BodyID2];
         return count;
     }

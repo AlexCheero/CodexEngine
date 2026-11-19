@@ -19,3 +19,5 @@ Create the world with the collision-layer pairs required by the game. Query mask
 The Griefborn checkout pins the corresponding revision as its Engine submodule. From a built game run `Player/Griefborn.exe --verify` for character traversal, per-body hit regions, growing overlap buffers, native mob steering on the original Arena and continuous ragdoll-to-static collision. The focused `--verify-encounters` runs the encounter and route checks.
 
 Body casts and overlaps can use the shape and center-of-mass transform of an existing Jolt body. These queries retain the shape while traversing the broad phase, exclude the source body, and reuse the per-worker contact arrays. Griefborn uses them for thrown torsos hitting the player and for the first landing on scenery.
+
+Sphere overlaps accept per-query triangle backface selection. Griefborn's Desert blood brush queries the authored single-sided floor from either side because its source torso tracker starts when the pivot reaches or passes below the ground. Each setting is created once per world so parallel queries can select it without mutating a shared Jolt setting.
