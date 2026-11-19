@@ -85,6 +85,12 @@ public sealed class CollisionNode : IDisposable
         using Shape shape = SphereShape.Create(radius);
         return Add(shape, trigger);
     }
+    /// <summary>One static broad-phase body containing local-space primitive shapes.</summary>
+    public Collider AddCompound(ReadOnlySpan<CompoundPart> parts,bool trigger=false)
+    {
+        using var compound=CollisionWorld.CreateCompoundShape(parts);
+        return Add(compound,trigger);
+    }
     /// <summary>Add indexed static geometry directly from a content bake, in node-local space.</summary>
     public Collider AddMesh(ReadOnlySpan<float3> vertices, ReadOnlySpan<IndexedTriangle> triangles, bool trigger = false)
     {
@@ -137,6 +143,7 @@ public sealed class Collider : IDisposable
         world.Register(this);
     }
     internal bool Dynamic { get; }
+    internal int DynamicSlot=-1;
     public void SetCapsule(float height,float radius)
     {
         using Shape shape = CollisionWorld.Capsule(height,radius);
@@ -197,6 +204,7 @@ public partial class CollisionWorld : IDisposable
     internal static Shape Capsule(float height,float radius) => height <= 2*radius ? (Shape)SphereShape.Create(radius) : CapsuleShape.Create(height*.5f-radius,radius);
     internal static Shape Box(Vector3 half) => BoxShape.Create(Native(half),Math.Min(.01f,Math.Min(half.x,Math.Min(half.y,half.z))*.25f));
     internal void Register(Collider c) => nodes[c.Id] = c;
+    public CollisionNode CreateNode(string name)=>new(this,name);
     internal void Remove(uint id)
     {
         if (!nodes.TryRemove(id,out var collider)) return;
@@ -204,7 +212,14 @@ public partial class CollisionWorld : IDisposable
         {
             for (int i = constraints.Count - 1; i >= 0; i--)
                 if (constraints[i].Connects(id)) constraints[i].Dispose();
-            dynamicColliders.Remove(collider);
+            if(collider.DynamicSlot>=0)
+            {
+                int last=dynamicColliders.Count-1;
+                var tail=dynamicColliders[last];
+                dynamicColliders[collider.DynamicSlot]=tail;
+                tail.DynamicSlot=collider.DynamicSlot;
+                dynamicColliders.RemoveAt(last);
+            }
         }
         if (Bodies.IsAdded(id)) Bodies.RemoveBody(id);
         Bodies.DestroyBody(id);

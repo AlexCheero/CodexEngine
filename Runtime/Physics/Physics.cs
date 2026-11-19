@@ -16,6 +16,16 @@ public struct RaycastHit
 
 public partial class CollisionWorld
 {
+    public bool Raycast(Vector3 origin,Vector3 direction,out RaycastHit hit,float distance,int mask,QueryTriggerInteraction triggers)=>
+        Ray(origin,direction,distance,mask,triggers,out hit);
+    public int RaycastNonAlloc(Vector3 origin,Vector3 direction,RaycastHit[] hits,float distance,int mask,QueryTriggerInteraction triggers)=>
+        Rays(origin,direction,distance,mask,triggers,hits);
+    public int OverlapSphereNonAlloc(Vector3 origin,float radius,Collider[] hits,int mask,QueryTriggerInteraction triggers)=>
+        Overlaps(SphereProbe(origin,radius),mask,triggers,hits);
+    public int OverlapCapsuleNonAlloc(Vector3 a,Vector3 b,float radius,Collider[] hits,int mask,QueryTriggerInteraction triggers)=>
+        Overlaps(CapsuleProbe(a,b,radius),mask,triggers,hits);
+    public bool SphereCast(Vector3 at,float radius,Vector3 direction,out RaycastHit hit,float distance,int mask,QueryTriggerInteraction triggers)=>
+        Sweep(SphereProbe(at,radius),direction,distance,mask,triggers,out hit);
     private sealed class LayerFilter(int mask, bool triggers) : ManagedObjectLayerFilter
     {
         protected override bool ShouldCollide(ushort layer) =>
@@ -23,6 +33,7 @@ public partial class CollisionWorld
     }
     private sealed class Scratch : IDisposable
     {
+        internal readonly OmitBody Exclusion=new();
         public RayCastResult[] Rays = new RayCastResult[32];
         public ShapeCastResult[] Sweeps = new ShapeCastResult[16];
         public CollideShapeResult[] Overlaps = new CollideShapeResult[8];
@@ -40,7 +51,22 @@ public partial class CollisionWorld
             slot = (kind,size,shape);
             return shape;
         }
-        public void Dispose() { foreach (var slot in shapes) slot.Shape.Dispose(); }
+        public void Dispose() { Exclusion.Dispose();foreach (var slot in shapes) slot.Shape.Dispose(); }
+    }
+    private sealed class OmitBody : ManagedBodyFilter
+    {
+        internal uint Id;
+        protected override bool ShouldCollide(uint bodyId)=>bodyId!=Id;
+        protected override bool ShouldCollideLocked(Body body)=>true;
+    }
+    public bool RaycastExcept(Collider excluded,Vector3 at,Vector3 direction,out RaycastHit hit,float distance,int mask,QueryTriggerInteraction triggers)
+    {
+        var delta=direction.normalized*distance;
+        var omit=scratch.Value.Exclusion;omit.Id=excluded.Id;
+        if(query.CastRayClosest(new RRayCast{Origin=Native(at),Direction=Native(delta)},raySettings,out var result,
+            objectLayerFilter:Filter(mask,triggers),bodyFilter:omit))
+        {hit=RayHit(result,at,delta,distance);return true;}
+        hit=default;return false;
     }
     private readonly ThreadLocal<Scratch> scratch = new(() => new Scratch(),true);
     private readonly ConcurrentDictionary<(int,QueryTriggerInteraction),LayerFilter> filters = new();

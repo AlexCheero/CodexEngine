@@ -6,6 +6,8 @@ using Matrix4x4 = System.Numerics.Matrix4x4;
 namespace CodexEngine.Runtime;
 
 public readonly record struct CollisionLayerPair(ushort First, ushort Second);
+public readonly record struct DynamicBodyMotion(bool LockRotation,float GravityFactor,float Friction,float LinearDamping);
+public readonly record struct CompoundPart(CollisionShape Shape,Vector3 Position,Quaternion Rotation);
 
 /// <summary>Box dimensions are half extents. Capsule height includes both caps.</summary>
 public readonly struct CollisionShape
@@ -35,6 +37,8 @@ public readonly struct RigidBody : IDisposable
     public void AddImpulse(Vector3 impulse) => World.Bodies.AddImpulse(Id, CollisionWorld.Native(impulse));
     public void SetAngularVelocity(Vector3 velocity) => World.Bodies.SetAngularVelocity(Id, CollisionWorld.Native(velocity));
     public void SetLinearVelocity(Vector3 velocity) => World.Bodies.SetLinearVelocity(Id, CollisionWorld.Native(velocity));
+    public Vector3 LinearVelocity => CollisionWorld.Managed(World.Bodies.GetLinearVelocity(Id));
+    public void SetGravityFactor(float factor) => World.Bodies.SetGravityFactor(Id,factor);
     public Matrix4x4 Pose => Matrix4x4.CreateFromQuaternion(Collider.transform.rotation.ToNumerics())
                           * Matrix4x4.CreateTranslation(Collider.transform.position.ToNumerics());
     public void Translate(Vector3 offset) => Collider.transform.position += offset;
@@ -72,10 +76,42 @@ public partial class CollisionWorld
     private JobSystemThreadPool solverJobs;
     private bool solverInitialized;
 
-    public RigidBody CreateDynamicBody(CollisionShape shape, Vector3 position, Quaternion rotation, float mass, ushort layer, Vector3 velocity)
+    public RigidBody CreateDynamicBody(CollisionShape shape, Vector3 position, Quaternion rotation, float mass, ushort layer, Vector3 velocity,
+        DynamicBodyMotion? motion=null)
     {
         using var nativeShape = shape.Create();
+        return CreateDynamicBody(nativeShape,position,rotation,mass,layer,velocity,motion);
+    }
+
+    public RigidBody CreateDynamicCompound(ReadOnlySpan<CompoundPart> parts, Vector3 position, Quaternion rotation, float mass,
+        ushort layer, Vector3 velocity, DynamicBodyMotion motion)
+    {
+        using var shape=CreateCompoundShape(parts);
+        return CreateDynamicBody(shape,position,rotation,mass,layer,velocity,motion);
+    }
+
+    internal static Shape CreateCompoundShape(ReadOnlySpan<CompoundPart> parts)
+    {
+        using var settings=StaticCompoundShapeSettings.Create();
+        foreach(ref readonly var part in parts)
+        {
+            using var child=part.Shape.Create();
+            settings.AddShape(Native(part.Position),Native(part.Rotation),child,0);
+        }
+        return settings.CreateShape();
+    }
+
+    private RigidBody CreateDynamicBody(Shape nativeShape,Vector3 position,Quaternion rotation,float mass,ushort layer,
+        Vector3 velocity,DynamicBodyMotion? motion)
+    {
         using var settings = BodyCreationSettings.Create(nativeShape, Native(position), Native(rotation), MotionType.Dynamic, layer);
+        if(motion is {} m)
+        {
+            if(m.LockRotation)settings.SetAllowedDOFs(AllowedDOFs.TranslationX|AllowedDOFs.TranslationY|AllowedDOFs.TranslationZ);
+            settings.SetGravityFactor(m.GravityFactor);
+            settings.SetFriction(m.Friction);
+            settings.SetLinearDamping(m.LinearDamping);
+        }
         settings.SetOverrideMassProperties(OverrideMassProperties.CalculateInertia);
         using var properties = MassProperties.Create();
         properties.SetMass(mass);
@@ -84,6 +120,7 @@ public partial class CollisionWorld
         var node = new CollisionNode(this, "Rigid body") { layer = layer };
         node.SetSimulatedPose(position, rotation);
         var collider = new Collider(this, node, id);
+        collider.DynamicSlot=dynamicColliders.Count;
         dynamicColliders.Add(collider);
         var body = new RigidBody(this, collider);
         body.SetLinearVelocity(velocity);
@@ -125,7 +162,7 @@ public partial class CollisionWorld
         constraint.Joint.Dispose();
     }
 
-    public void Step(float dt)
+    public void Step(float dt,int subdivisions=1)
     {
         if (!solverInitialized)
         {
@@ -133,7 +170,9 @@ public partial class CollisionWorld
             solverJobs = JobSystemThreadPool.Create(2048, 8, Math.Clamp(Environment.ProcessorCount / 2, 1, 4));
             solverInitialized = true;
         }
-        system.Update(dt, 1, temporaryMemory, solverJobs);
+        ArgumentOutOfRangeException.ThrowIfLessThan(subdivisions,1);
+        float interval=dt/subdivisions;
+        for(int i=0;i<subdivisions;i++)system.Update(interval,1,temporaryMemory,solverJobs);
         foreach (var collider in dynamicColliders)
         {
             Bodies.GetPositionAndRotation(collider.Id, out var position, out var rotation);
