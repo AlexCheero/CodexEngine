@@ -22,16 +22,21 @@ float SunVisibility(float3 position, float3 normal) {
     slope *= sign(determinant)/max(abs(determinant),1e-14);
     float fade = saturate((1-distance(position,ShadowCenter)/ShadowMetrics.z)*10);
     if (fade == 0 || any(abs(light.xy)>=1) || light.z<=0 || light.z>=1) return 1;
-    // Bilinear filtering of four visibility comparisons keeps silhouette edges continuous.
+    // Sixteen comparisons under a three-texel box. Bilinear weights on its outer taps keep the
+    // penumbra continuous as the receiver moves across the texel grid.
     float2 grid = uv/ShadowMetrics.x-.5;
     float2 center = (floor(grid)+.5)*ShadowMetrics.x;
     float2 f = frac(grid);
-    float2 stepUV = float2(ShadowMetrics.x,0);
     float reference = light.z + dot(center-uv,slope);
     float2 depthStep = slope*ShadowMetrics.x;
-    float a = step(reference, tex2Dlod(ShadowSampler,float4(center,0,0)).r);
-    float b = step(reference+depthStep.x, tex2Dlod(ShadowSampler,float4(center+stepUV.xy,0,0)).r);
-    float c = step(reference+depthStep.y, tex2Dlod(ShadowSampler,float4(center+stepUV.yx,0,0)).r);
-    float d = step(reference+depthStep.x+depthStep.y, tex2Dlod(ShadowSampler,float4(center+stepUV.xx,0,0)).r);
-    return lerp(1,lerp(lerp(a,b,f.x),lerp(c,d,f.x),f.y),fade);
+    float4 across = float4(1-f.x,1,1,f.x), along = float4(1-f.y,1,1,f.y);
+    float lit = 0;
+    [unroll] for (int j=0; j<4; j++) {
+        [unroll] for (int i=0; i<4; i++) {
+            float2 tap = float2(i-1,j-1);
+            float occluder = tex2Dlod(ShadowSampler,float4(center+tap*ShadowMetrics.x,0,0)).r;
+            lit += across[i]*along[j]*step(reference+dot(tap,depthStep),occluder);
+        }
+    }
+    return lerp(1,lit/9,fade);
 }

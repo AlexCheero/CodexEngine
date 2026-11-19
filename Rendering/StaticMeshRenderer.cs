@@ -118,6 +118,16 @@ public sealed class StaticMeshRenderer : IDisposable
     readonly Dictionary<string, Texture2D> textures = new();
     readonly EffectParameter world, viewProjection, eye, albedo, cutoff;
 
+    /// <summary>
+    /// Surface maps stay sharp at grazing angles. Surface effects leave the filter to this state:
+    /// FNA reapplies a filter named in an effect on every pass and cannot express anisotropy there.
+    /// </summary>
+    public static readonly SamplerState SurfaceSampler = new()
+    {
+        Name = "CodexEngine.SurfaceSampler", Filter = TextureFilter.Anisotropic, MaxAnisotropy = 16,
+        AddressU = TextureAddressMode.Wrap, AddressV = TextureAddressMode.Wrap, AddressW = TextureAddressMode.Wrap
+    };
+
     public Matrix ViewProjection { get; private set; }
     public Effect Material => shader;
     public bool InspectFrame { get; set; }
@@ -194,11 +204,12 @@ public sealed class StaticMeshRenderer : IDisposable
         ViewProjection=view*projection;viewProjection.SetValue(ViewProjection);eye.SetValue(position);
         frustum.Matrix=ViewProjection;
         gpu.DepthStencilState=DepthStencilState.Default;gpu.RasterizerState=RasterizerState.CullNone;gpu.BlendState=BlendState.Opaque;
-        gpu.SamplerStates[0]=SamplerState.AnisotropicWrap;
+        gpu.SamplerStates[0]=SurfaceSampler;
     }
     public void Draw(Batch batch,Matrix transform,EffectTechnique technique = null)
     {
         shader.CurrentTechnique=technique ?? (InspectFrame ? frameTechnique : surfaceTechnique);world.SetValue(transform);
+        gpu.SamplerStates[0]=SurfaceSampler;
         gpu.SetVertexBuffer(batch.Vertices);gpu.Indices=batch.Indices;
         foreach(var span in batch.Spans){
             albedo.SetValue(span.Map);cutoff.SetValue(span.Cutoff);

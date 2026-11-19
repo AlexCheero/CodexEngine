@@ -1,5 +1,6 @@
 texture BaseMap;
-sampler2D AlbedoSampler = sampler_state { Texture=<BaseMap>; MinFilter=Linear; MagFilter=Linear; MipFilter=Linear; AddressU=Wrap; AddressV=Wrap; };
+// The renderer's SurfaceSampler supplies the anisotropic filter. A filter listed here would replace it on every pass.
+sampler2D AlbedoSampler = sampler_state { Texture=<BaseMap>; AddressU=Wrap; AddressV=Wrap; };
 float AlphaCutoff;
 #include "DirectionalShadows.hlsl"
 #include "ShadowCaster.hlsl"

@@ -149,6 +149,7 @@ public sealed class SkinnedMeshRenderer : IDisposable
         worldParameter.SetValue(world);
         viewProjectionParameter.SetValue(viewProjection);
         eyeParameter.SetValue(eye);
+        gpu.SamplerStates[0] = StaticMeshRenderer.SurfaceSampler;
         foreach (var part in parts)
         {
             for (int k = 0; k < part.Bones.Length; k++)
