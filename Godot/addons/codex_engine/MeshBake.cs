@@ -9,20 +9,27 @@ public static class MeshBake
 {
     public const string ScriptPath = "res://addons/codex_engine/MeshBake.cs";
 
-    public static void BakeTexture(string source,string destination)
+    /// <summary>What a shader reads from a texture. Colour tolerates S3TC; relief and material masks do not.</summary>
+    public enum TextureUse { Colour, Mask, Relief }
+
+    public static void BakeTexture(string source,string destination,TextureUse use=TextureUse.Colour)
     {
         if(File.Exists(destination) && File.GetLastWriteTimeUtc(destination)>File.GetLastWriteTimeUtc(source))return;
         using var img=Image.LoadFromFile(source);
-        BakeTexture(img,destination);
+        BakeTexture(img,destination,use);
     }
 
-    public static void BakeTexture(Image img,string destination)
+    public static void BakeTexture(Image img,string destination,TextureUse use=TextureUse.Colour)
     {
         if(img.DetectAlpha()==Image.AlphaMode.None)img.Convert(Image.Format.Rgb8);
-        if(img.GenerateMipmaps()!=Error.Ok || img.Compress(Image.CompressMode.S3Tc,Image.CompressSource.Generic)!=Error.Ok)
+        // A normal or a metalness is a number per channel. BC7 keeps its gradients where S3TC would band them.
+        var mode=use==TextureUse.Colour?Image.CompressMode.S3Tc:Image.CompressMode.Bptc;
+        // Averaged normals shorten. Each smaller level is brought back to unit length.
+        if(img.GenerateMipmaps(use==TextureUse.Relief)!=Error.Ok || img.Compress(mode,Image.CompressSource.Generic)!=Error.Ok)
             throw new InvalidDataException("Cannot encode texture "+destination);
         var format=img.GetFormat();
-        int block=format switch{Image.Format.Dxt1=>1,Image.Format.Dxt5=>5,Image.Format.Dxt3=>3,_=>throw new InvalidDataException("Unexpected block format "+format)};
+        int block=format switch{Image.Format.Dxt1=>1,Image.Format.Dxt5=>5,Image.Format.Dxt3=>3,Image.Format.BptcRgba=>7,
+            _=>throw new InvalidDataException("Unexpected block format "+format)};
         byte[] bytes=img.GetData();int levels=img.GetMipmapCount()+1;
         var temp=destination+"."+Guid.NewGuid().ToString("N")+".tmp";
         try{

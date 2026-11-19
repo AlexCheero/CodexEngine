@@ -26,19 +26,61 @@ internal struct SurfacePoint : IVertexType
 
 public sealed class StaticMeshRenderer : IDisposable
 {
-    internal sealed record Span(int Start,int Primitives,Texture2D Map,float Cutoff);
+    internal sealed record Span(int Start,int Primitives,Texture2D Map,float Cutoff,Texture2D Normal,Texture2D Mask,
+        Texture2D Glow,Vector4 Factors,Vector3 Emission,bool Blend);
+    /// <summary>Collects triangles by base texture, cutoff and authored material. Opaque spans come first.</summary>
+    sealed class Grouping(StaticMeshRenderer owner,string model)
+    {
+        readonly Dictionary<(string Texture,float Cutoff,SurfaceMaterial Material),List<int>> groups=new();
+        readonly Dictionary<(string,uint),SurfaceMaterial> known=new();
+        public void Add(DrawSurface surface,int[] indices,uint[] colors,int firstVertex)
+        {
+            // A surface merged by the baker can hold several tints of one texture, each its own material.
+            List<int> faces=null;uint current=0;
+            for(int i=surface.Start;i<surface.Start+surface.Count;i+=3)
+            {
+                uint color=colors[indices[i]];
+                if(faces==null || color!=current)
+                {
+                    current=color;
+                    if(!known.TryGetValue((surface.Texture,color),out var material))
+                        known.Add((surface.Texture,color),material=owner.materials.Find(surface.Texture,new Color{PackedValue=color}.ToVector4(),model));
+                    var key=(surface.Texture,surface.Cutoff,material);
+                    if(!groups.TryGetValue(key,out faces))groups.Add(key,faces=new());
+                }
+                faces.Add(indices[i]+firstVertex);faces.Add(indices[i+1]+firstVertex);faces.Add(indices[i+2]+firstVertex);
+            }
+        }
+        public (int[] Indices,Span[] Spans) Build()
+        {
+            var indices=new List<int>();var spans=new List<Span>();
+            foreach(bool blend in new[]{false,true})
+                foreach(var (key,faces) in groups)
+                {
+                    var m=key.Material;
+                    if(m.Blend!=blend)continue;
+                    spans.Add(new(indices.Count,faces.Count/3,owner.Texture(key.Texture),key.Cutoff,
+                        owner.Texture(owner.ReadMap(m.Normal,FlatNormal)),owner.Texture(owner.ReadMap(m.Mask,PlainMask)),
+                        owner.Texture(owner.ReadMap(m.Glow,NoGlow)),m.Factors,m.Emission,m.Blend));
+                    indices.AddRange(faces);
+                }
+            return (indices.ToArray(),spans.ToArray());
+        }
+    }
     public sealed class Batch : IDisposable
     {
         internal readonly VertexBuffer Vertices;
         internal readonly IndexBuffer Indices;
         internal readonly Span[] Spans;
         public readonly BoundingSphere Bounds;
+        /// <summary>Has surfaces for <see cref="DrawBlended"/>.</summary>
+        public bool HasBlended => Spans.Length>0 && Spans[^1].Blend;
 
-        internal Batch(StaticMeshRenderer owner,IEnumerable<(Geometry Geometry,Matrix World)> entries)
+        internal Batch(StaticMeshRenderer owner,IEnumerable<(Geometry Geometry,Matrix World)> entries,string model)
         {
             var vertices=new List<SurfacePoint>();
             var min=new Vector3(float.MaxValue);var max=new Vector3(float.MinValue);
-            var groups=new Dictionary<(string,float),List<int>>();
+            var groups=new Grouping(owner,model);
             foreach(var (g,world) in entries)
             {
                 var normal=Matrix.Transpose(Matrix.Invert(world));
@@ -54,26 +96,16 @@ public sealed class StaticMeshRenderer : IDisposable
                         Tangent=new(Vector3.Normalize(Vector3.TransformNormal(t,world)),g.Tangents[k+3]),Uv=new(g.Uvs[i*2],g.Uvs[i*2+1]),
                         Color=new Color{PackedValue=g.Colors[i]}});
                 }
-                foreach(var s in g.Surfaces)
-                {
-                    var key=(s.Texture,s.Cutoff);
-                    if(!groups.TryGetValue(key,out var faces))groups.Add(key,faces=new());
-                    for(int i=s.Start;i<s.Start+s.Count;i++)faces.Add(g.Indices[i]+first);
-                }
+                foreach(var s in g.Surfaces)groups.Add(s,g.Indices,g.Colors,first);
             }
-            var indices=new List<int>();var spans=new List<Span>();
-            foreach(var (material,faces) in groups)
-            {
-                spans.Add(new(indices.Count,faces.Count/3,owner.Texture(material.Item1),material.Item2));
-                indices.AddRange(faces);
-            }
-            (Vertices,Indices)=Upload(owner.gpu,vertices.ToArray(),indices.ToArray());
-            Spans=spans.ToArray();
+            var (indices,spans)=groups.Build();
+            (Vertices,Indices)=Upload(owner.gpu,vertices.ToArray(),indices);
+            Spans=spans;
             Bounds=BoundingSphere.CreateFromBoundingBox(new(min,max));
         }
         internal Batch(StaticMeshRenderer owner,BakedSceneLight light)
         {
-            // The baker has already transformed the vertices and grouped every material.
+            // The baker has already transformed the vertices and merged them by base texture.
             var mesh=light.Mesh;
             var vertices=new SurfacePoint[mesh.Colors.Length];
             var min=new Vector3(float.MaxValue);
@@ -91,8 +123,11 @@ public sealed class StaticMeshRenderer : IDisposable
                 min=Vector3.Min(min,v.Position); max=Vector3.Max(max,v.Position);
             }
             Bounds=BoundingSphere.CreateFromBoundingBox(new(min,max));
-            Spans=Array.ConvertAll(mesh.Surfaces,s=>new Span(s.Start,s.Count/3,owner.Texture(s.Texture),s.Cutoff));
-            (Vertices,Indices)=Upload(owner.gpu,vertices,mesh.Indices);
+            var groups=new Grouping(owner,null);
+            foreach(var s in mesh.Surfaces)groups.Add(s,mesh.Indices,mesh.Colors,0);
+            var (indices,spans)=groups.Build();
+            Spans=spans;
+            (Vertices,Indices)=Upload(owner.gpu,vertices,indices);
         }
         static (VertexBuffer,IndexBuffer) Upload(GraphicsDevice gpu,SurfacePoint[] vertices,int[] indices)
         {
@@ -117,6 +152,18 @@ public sealed class StaticMeshRenderer : IDisposable
     readonly EffectTechnique surfaceTechnique, frameTechnique;
     readonly Dictionary<string, Texture2D> textures = new();
     readonly EffectParameter world, viewProjection, eye, albedo, cutoff;
+    // Absent from effects that shade the base texture alone.
+    readonly EffectParameter normalMap, maskMap, glowMap, factors, emission;
+    readonly SurfaceMaterials materials;
+    readonly BlendState blended = new()
+    {
+        // Glass leaves the eye distance held in the target's alpha to the surface behind it.
+        ColorSourceBlend = Blend.One, ColorDestinationBlend = Blend.InverseSourceAlpha,
+        AlphaSourceBlend = Blend.Zero, AlphaDestinationBlend = Blend.One
+    };
+
+    /// <summary>Built-in maps for a material without its own: no relief, a dielectric mask, no glow.</summary>
+    public const string FlatNormal = "#normal", PlainMask = "#mask", NoGlow = "#black";
 
     /// <summary>
     /// Surface maps stay sharp at grazing angles. Surface effects leave the filter to this state:
@@ -133,10 +180,11 @@ public sealed class StaticMeshRenderer : IDisposable
     public bool InspectFrame { get; set; }
 
     public StaticMeshRenderer(GraphicsDevice gpu, string effectPath, string textureDirectory,
-        string surfaceTechnique, string frameTechnique)
+        string surfaceTechnique, string frameTechnique, SurfaceMaterials materials = null)
     {
         this.gpu = gpu;
         this.textureDirectory = textureDirectory;
+        this.materials = materials ?? new SurfaceMaterials();
         shader = new Effect(gpu, File.ReadAllBytes(effectPath));
         this.surfaceTechnique = shader.Techniques[surfaceTechnique];
         this.frameTechnique = shader.Techniques[frameTechnique];
@@ -145,17 +193,30 @@ public sealed class StaticMeshRenderer : IDisposable
         eye = shader.Parameters["EyePosition"];
         albedo = shader.Parameters["BaseMap"];
         cutoff = shader.Parameters["AlphaCutoff"];
+        normalMap = shader.Parameters["NormalMap"];
+        maskMap = shader.Parameters["MaskMap"];
+        glowMap = shader.Parameters["GlowMap"];
+        factors = shader.Parameters["Material"];
+        emission = shader.Parameters["Emission"];
 
-        var white = new Texture2D(gpu, 1, 1);
-        white.SetData(new[] { Color.White });
-        textures.Add("", white);
+        // The plain mask is full metalness and smoothness for the material's scales, no occlusion and 4% reflectance.
+        foreach (var (name, color) in new[] { ("", Color.White), (FlatNormal, new Color(128, 128, 255)),
+            (PlainMask, new Color(255, 255, 10, 255)), (NoGlow, Color.Black) })
+        {
+            var texture = new Texture2D(gpu, 1, 1);
+            texture.SetData(new[] { color });
+            textures.Add(name, texture);
+        }
     }
 
+    public SurfaceMaterials Materials => materials;
+
     /// <summary>Combine meshes by material in world or model space. The caller owns the resulting GPU buffers.</summary>
-    public Batch CreateBatch(IEnumerable<(Geometry Geometry, Matrix World)> meshes) => new(this, meshes);
+    public Batch CreateBatch(IEnumerable<(Geometry Geometry, Matrix World)> meshes) => new(this, meshes, null);
     public Batch CreateBatch(BakedSceneLight light) => new(this,light);
 
-    public Batch LoadModel(string path) => CreateBatch([(Geometry.Read(path), Matrix.Identity)]);
+    /// <summary>The file name, kind-id, tells this model's materials from another's that look alike.</summary>
+    public Batch LoadModel(string path) => new(this, [(Geometry.Read(path), Matrix.Identity)], Path.GetFileNameWithoutExtension(path));
 
     public Texture2D Texture(string name)
     {
@@ -170,15 +231,17 @@ public sealed class StaticMeshRenderer : IDisposable
         internal SurfaceFormat Format;
         internal byte[][] Mips;
         internal static readonly TextureData White = new() { Name = "" };
+        internal static TextureData BuiltIn(string name) => new() { Name = name };
     }
 
     // This stage touches only the baked file and can run on an asset worker.
     public TextureData ReadTexture(string name)
     {
         if (name.Length == 0) return TextureData.White;
+        if (name[0] == '#') return TextureData.BuiltIn(name);
         using var r = new BinaryReader(File.OpenRead(Path.Combine(textureDirectory, Path.GetFileNameWithoutExtension(name) + ".btex")));
         var data = new TextureData { Name = name, Width = r.ReadInt32(), Height = r.ReadInt32() };
-        data.Format = r.ReadInt32() switch { 1 => SurfaceFormat.Dxt1, 3 => SurfaceFormat.Dxt3, 5 => SurfaceFormat.Dxt5,
+        data.Format = r.ReadInt32() switch { 1 => SurfaceFormat.Dxt1, 3 => SurfaceFormat.Dxt3, 5 => SurfaceFormat.Dxt5, 7 => SurfaceFormat.Bc7EXT,
             _ => throw new InvalidDataException("Invalid BC texture " + name) };
         data.Mips = new byte[r.ReadInt32()][];
         for (int i = 0; i < data.Mips.Length; i++)
@@ -187,6 +250,14 @@ public sealed class StaticMeshRenderer : IDisposable
             r.BaseStream.ReadExactly(data.Mips[i]);
         }
         return data;
+    }
+
+    /// <summary>A material map, or its built-in stand-in while the bake has not produced the file.</summary>
+    public TextureData ReadMap(string name, string standIn)
+    {
+        bool present = name.Length == 0 || name[0] == '#' ||
+            File.Exists(Path.Combine(textureDirectory, Path.GetFileNameWithoutExtension(name) + ".btex"));
+        return ReadTexture(present ? name : standIn);
     }
 
     public Texture2D Texture(TextureData data)
@@ -206,13 +277,31 @@ public sealed class StaticMeshRenderer : IDisposable
         gpu.DepthStencilState=DepthStencilState.Default;gpu.RasterizerState=RasterizerState.CullNone;gpu.BlendState=BlendState.Opaque;
         gpu.SamplerStates[0]=SurfaceSampler;
     }
-    public void Draw(Batch batch,Matrix transform,EffectTechnique technique = null)
+    /// <summary>Draws the opaque surfaces. A shadow pass passes <paramref name="everySurface"/> so glass casts too.</summary>
+    public void Draw(Batch batch,Matrix transform,EffectTechnique technique = null,bool everySurface = false)
     {
         shader.CurrentTechnique=technique ?? (InspectFrame ? frameTechnique : surfaceTechnique);world.SetValue(transform);
-        gpu.SamplerStates[0]=SurfaceSampler;
+        DrawSpans(batch,false,everySurface);
+    }
+    /// <summary>Draws the blended surfaces over the finished opaque scene with a technique that returns premultiplied colour.</summary>
+    public void DrawBlended(Batch batch,Matrix transform,EffectTechnique technique)
+    {
+        if(!batch.HasBlended)return;
+        var blend=gpu.BlendState;var depth=gpu.DepthStencilState;
+        gpu.BlendState=blended;gpu.DepthStencilState=DepthStencilState.DepthRead;
+        shader.CurrentTechnique=technique;world.SetValue(transform);
+        DrawSpans(batch,true,false);
+        gpu.BlendState=blend;gpu.DepthStencilState=depth;
+    }
+    void DrawSpans(Batch batch,bool blend,bool every)
+    {
+        gpu.SamplerStates[0]=SurfaceSampler;gpu.SamplerStates[3]=SurfaceSampler;gpu.SamplerStates[4]=SurfaceSampler;gpu.SamplerStates[5]=SurfaceSampler;
         gpu.SetVertexBuffer(batch.Vertices);gpu.Indices=batch.Indices;
         foreach(var span in batch.Spans){
+            if(!every && span.Blend!=blend)continue;
             albedo.SetValue(span.Map);cutoff.SetValue(span.Cutoff);
+            normalMap?.SetValue(span.Normal);maskMap?.SetValue(span.Mask);glowMap?.SetValue(span.Glow);
+            factors?.SetValue(span.Factors);emission?.SetValue(span.Emission);
             shader.CurrentTechnique.Passes[0].Apply();
             gpu.DrawIndexedPrimitives(PrimitiveType.TriangleList,0,0,batch.Vertices.VertexCount,span.Start,span.Primitives);
         }
@@ -223,5 +312,6 @@ public sealed class StaticMeshRenderer : IDisposable
     {
         foreach (var texture in textures.Values) texture.Dispose();
         shader.Dispose();
+        blended.Dispose();
     }
 }
