@@ -32,17 +32,20 @@ public sealed class BodyCollisionGroup : IDisposable
 /// <summary>Box dimensions are half extents. Capsule height includes both caps.</summary>
 public readonly struct CollisionShape
 {
-    private enum Kind { Box, Sphere, Capsule }
+    private enum Kind { Box, Sphere, Capsule, Cylinder }
     private readonly Kind kind;
     private readonly Vector3 dimensions;
     private CollisionShape(Kind kind, Vector3 dimensions) { this.kind = kind; this.dimensions = dimensions; }
     public static CollisionShape Box(Vector3 halfExtents) => new(Kind.Box, halfExtents);
     public static CollisionShape Sphere(float radius) => new(Kind.Sphere, new(radius, 0, 0));
     public static CollisionShape Capsule(float height, float radius) => new(Kind.Capsule, new(radius, height, 0));
+    /// Upright cylinder with full height and rounded edges, suitable for stackable bodies.
+    public static CollisionShape Cylinder(float height,float radius) => new(Kind.Cylinder,new(radius,height,0));
     internal Shape Create() => kind switch
     {
         Kind.Box => CollisionWorld.Box(dimensions),
         Kind.Sphere => SphereShape.Create(dimensions.x),
+        Kind.Cylinder => CylinderShape.Create(dimensions.y*.5f,dimensions.x,Math.Min(.05f,Math.Min(dimensions.y*.25f,dimensions.x*.25f))),
         _ => CollisionWorld.Capsule(dimensions.y, dimensions.x)
     };
 }
