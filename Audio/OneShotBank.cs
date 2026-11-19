@@ -12,16 +12,16 @@ namespace CodexEngine.Audio
         {
             internal readonly SoundEffect FormatSource;
             private readonly IntPtr[] voices;
-            private readonly IntPtr master;
+            private readonly IntPtr output;
             private readonly uint sourceChannels, outputChannels;
             private readonly float[] centerMatrix, panMatrix;
             private int next;
 
-            internal VoicePool(SoundEffect effect, int capacity)
+            internal unsafe VoicePool(SoundEffect effect, int capacity, IntPtr output)
             {
                 FormatSource = effect;
                 var device = SoundEffect.Device();
-                master = device.MasterVoice;
+                this.output = output;
                 sourceChannels = effect.channels;
                 outputChannels = device.DeviceDetails.OutputFormat.Format.nChannels;
                 centerMatrix = new float[sourceChannels * outputChannels];
@@ -29,10 +29,12 @@ namespace CodexEngine.Audio
                 voices = new IntPtr[capacity];
                 try
                 {
+                    var send = new FAudio.FAudioSendDescriptor { pOutputVoice = output };
+                    var sends = new FAudio.FAudioVoiceSends { SendCount = 1, pSends = (IntPtr)(&send) };
                     for (int i = 0; i < voices.Length; i++)
                         Check(FAudio.FAudio_CreateSourceVoice(device.Handle, out voices[i], effect.formatPtr, 0,
-                            FAudio.FAUDIO_DEFAULT_FREQ_RATIO, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero));
-                    FAudio.FAudioVoice_GetOutputMatrix(voices[0], master, sourceChannels, outputChannels, centerMatrix);
+                            FAudio.FAUDIO_DEFAULT_FREQ_RATIO, IntPtr.Zero, (IntPtr)(&sends), IntPtr.Zero));
+                    FAudio.FAudioVoice_GetOutputMatrix(voices[0], output, sourceChannels, outputChannels, centerMatrix);
                 }
                 catch
                 {
@@ -63,7 +65,7 @@ namespace CodexEngine.Audio
                 {
                     if (pan != 0f)
                         SoundEffectInstance.SetPanMatrixCoefficients(pan, sourceChannels, outputChannels, matrix);
-                    Check(FAudio.FAudioVoice_SetOutputMatrix(voice, master, sourceChannels, outputChannels, (IntPtr)matrix, 0));
+                    Check(FAudio.FAudioVoice_SetOutputMatrix(voice, output, sourceChannels, outputChannels, (IntPtr)matrix, 0));
                 }
                 Check(FAudio.FAudioVoice_SetVolume(voice, volume, 0));
                 Check(FAudio.FAudioSourceVoice_SetFrequencyRatio(voice, speed, 0));
@@ -80,6 +82,8 @@ namespace CodexEngine.Audio
 
         private readonly string directory;
         private readonly int voicesPerFormat;
+        private readonly uint sampleRate;
+        private IntPtr submix;
         private readonly List<VoicePool> pools = new List<VoicePool>();
         private readonly Dictionary<string, (SoundEffect Effect, VoicePool Pool)> clips =
             new Dictionary<string, (SoundEffect, VoicePool)>(StringComparer.OrdinalIgnoreCase);
@@ -89,6 +93,29 @@ namespace CodexEngine.Audio
             if (voicesPerFormat < 1) throw new ArgumentOutOfRangeException(nameof(voicesPerFormat));
             this.directory = directory;
             this.voicesPerFormat = voicesPerFormat;
+            var device = SoundEffect.Device();
+            var format = device.DeviceDetails.OutputFormat.Format;
+            sampleRate = format.nSamplesPerSec;
+            Check(FAudio.FAudio_CreateSubmixVoice(device.Handle, out submix, format.nChannels, sampleRate,
+                FAudio.FAUDIO_VOICE_USEFILTER, 0, IntPtr.Zero, IntPtr.Zero));
+        }
+
+        public void SetLowPass(float cutoffHz) => SetLowPass(submix, sampleRate, cutoffHz);
+
+        public static void SetLowPass(SoundEffectInstance instance, float cutoffHz)
+        {
+            FAudio.FAudioVoice_GetVoiceDetails(instance.handle, out var details);
+            SetLowPass(instance.handle, details.InputSampleRate, cutoffHz);
+        }
+
+        private static void SetLowPass(IntPtr voice, uint rate, float cutoffHz)
+        {
+            float frequency = cutoffHz >= rate / 6f ? FAudio.FAUDIO_DEFAULT_FILTER_FREQUENCY
+                : 2f * MathF.Sin(MathF.PI * cutoffHz / rate);
+            var filter = new FAudio.FAudioFilterParameters {
+                Type = FAudio.FAudioFilterType.FAudioLowPassFilter, Frequency = frequency, OneOverQ = 1f
+            };
+            Check(FAudio.FAudioVoice_SetFilterParameters(voice, ref filter, 0));
         }
 
         public void Load(string name)
@@ -106,7 +133,7 @@ namespace CodexEngine.Audio
                         return;
                     }
                 }
-                var newPool = new VoicePool(effect, voicesPerFormat);
+                var newPool = new VoicePool(effect, voicesPerFormat, submix);
                 pools.Add(newPool);
                 clips.Add(name, (effect, newPool));
             }
@@ -141,6 +168,11 @@ namespace CodexEngine.Audio
             pools.Clear();
             foreach (var clip in clips.Values) clip.Effect.Dispose();
             clips.Clear();
+            if (submix != IntPtr.Zero)
+            {
+                FAudio.FAudioVoice_DestroyVoice(submix);
+                submix = IntPtr.Zero;
+            }
         }
     }
 }
