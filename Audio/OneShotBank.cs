@@ -8,10 +8,21 @@ namespace CodexEngine.Audio
     /// <summary>Preloaded clips and reusable FAudio voices on FNA's sound device. Owned by the playback thread.</summary>
     public sealed class OneShotBank : IDisposable
     {
+        /// <summary>One playing clip: its pool's voice and the play that started it (a reused voice is a new play).</summary>
+        public readonly struct Voice
+        {
+            internal readonly object Pool;
+            internal readonly int Index, Serial;
+            internal Voice(object pool, int index, int serial) { Pool = pool; Index = index; Serial = serial; }
+            public bool IsValid => Pool != null;
+        }
+
         private sealed class VoicePool : IDisposable
         {
             internal readonly SoundEffect FormatSource;
             private readonly IntPtr[] voices;
+            private readonly int[] serials;
+            private int serial;
             private readonly IntPtr output;
             private readonly uint sourceChannels, outputChannels;
             private readonly float[] centerMatrix, panMatrix;
@@ -27,6 +38,7 @@ namespace CodexEngine.Audio
                 centerMatrix = new float[sourceChannels * outputChannels];
                 panMatrix = new float[centerMatrix.Length];
                 voices = new IntPtr[capacity];
+                serials = new int[capacity];
                 try
                 {
                     var send = new FAudio.FAudioSendDescriptor { pOutputVoice = output };
@@ -43,7 +55,29 @@ namespace CodexEngine.Audio
                 }
             }
 
-            internal unsafe void Play(SoundEffect effect, float volume, float speed, float pan)
+            internal bool Owns(in Voice voice) => voice.Pool == this && serials[voice.Index] == voice.Serial;
+
+            internal bool IsPlaying(in Voice voice)
+            {
+                if (!Owns(voice)) return false;
+                FAudio.FAudioSourceVoice_GetState(voices[voice.Index], out var state, FAudio.FAUDIO_VOICE_NOSAMPLESPLAYED);
+                return state.BuffersQueued != 0;
+            }
+
+            internal void SetVolume(in Voice voice, float volume)
+            {
+                if (Owns(voice)) Check(FAudio.FAudioVoice_SetVolume(voices[voice.Index], volume, 0));
+            }
+
+            internal void Stop(in Voice voice)
+            {
+                if (!Owns(voice)) return;
+                Check(FAudio.FAudioSourceVoice_Stop(voices[voice.Index], 0, 0));
+                Check(FAudio.FAudioSourceVoice_FlushSourceBuffers(voices[voice.Index]));
+                serials[voice.Index] = ++serial;
+            }
+
+            internal unsafe Voice Play(SoundEffect effect, float volume, float speed, float pan)
             {
                 // Start searching after the last voice used. Recycle that ring's next voice if all are busy.
                 int index = next;
@@ -71,6 +105,8 @@ namespace CodexEngine.Audio
                 Check(FAudio.FAudioSourceVoice_SetFrequencyRatio(voice, speed, 0));
                 Check(FAudio.FAudioSourceVoice_SubmitSourceBuffer(voice, ref effect.handle, IntPtr.Zero));
                 Check(FAudio.FAudioSourceVoice_Start(voice, 0, 0));
+                serials[index] = ++serial;
+                return new Voice(this, index, serials[index]);
             }
 
             public void Dispose()
@@ -150,10 +186,29 @@ namespace CodexEngine.Audio
             return new ReadOnlySpan<byte>(format, sizeof(FAudio.FAudioWaveFormatEx) + format->cbSize);
         }
 
-        public void Play(string name, float volume, float speed, float pan)
+        /// <summary>Starts a clip on a free voice of its format, or on the oldest when all are busy, and returns the play.</summary>
+        public Voice Play(string name, float volume, float speed, float pan)
         {
             var clip = clips[name];
-            clip.Pool.Play(clip.Effect, Math.Clamp(volume, 0f, 1f), Math.Clamp(speed, .5f, 2f), Math.Clamp(pan, -1f, 1f));
+            return clip.Pool.Play(clip.Effect, Math.Clamp(volume, 0f, 1f), Math.Clamp(speed, .5f, 2f), Math.Clamp(pan, -1f, 1f));
+        }
+
+        /// <summary>The clip's length in seconds at its own rate.</summary>
+        public float Length(string name) => (float)clips[name].Effect.Duration.TotalSeconds;
+
+        /// <summary>Whether the play is still sounding (its voice was neither reused nor stopped).</summary>
+        public bool IsPlaying(in Voice voice) => voice.Pool is VoicePool pool && pool.IsPlaying(voice);
+
+        /// <summary>Sets the play's volume (0 to 1) while it lasts.</summary>
+        public void SetVolume(in Voice voice, float volume)
+        {
+            if (voice.Pool is VoicePool pool) pool.SetVolume(voice, Math.Clamp(volume, 0f, 1f));
+        }
+
+        /// <summary>Ends the play at once and frees its voice.</summary>
+        public void Stop(in Voice voice)
+        {
+            if (voice.Pool is VoicePool pool) pool.Stop(voice);
         }
 
         private static void Check(uint result)
