@@ -80,9 +80,15 @@ public static class CodexFidelityCapture
     {
         Physics.SyncTransforms();
         var lines=new System.Collections.Generic.List<string>();
-        foreach(var vy in new[]{.15f,.4f,.6f,.85f})foreach(var vx in new[]{.15f,.5f,.85f}){
+        // Default 3x4 grid, or CODEX_FIDELITY_PROBE="x,y;x,y" viewport points measured from the top-left.
+        var points=(Env("PROBE")??"").Split(';',StringSplitOptions.RemoveEmptyEntries).Select(p=>p.Split(',')).Select(p=>(float.Parse(p[0],CultureInfo.InvariantCulture),float.Parse(p[1],CultureInfo.InvariantCulture))).ToList();
+        if(points.Count==0)foreach(var gy in new[]{.15f,.4f,.6f,.85f})foreach(var gx in new[]{.15f,.5f,.85f})points.Add((gx,gy));
+        foreach(var (vx,vy) in points){
             var ray=cam.ViewportPointToRay(new Vector3(vx,1-vy,0));
-            if(!Physics.Raycast(ray,out var hit,2000f,~0,QueryTriggerInteraction.Ignore)){lines.Add($"({vx},{vy}) sky");continue;}
+            foreach(var other in Physics.RaycastAll(ray,2000f,~0,QueryTriggerInteraction.Ignore).OrderBy(h=>h.distance).Skip(1).Take(3))lines.Add($"   behind: {other.collider.name} d={other.distance:F1}");
+            var mesh=PickRenderer(ray,out float meshDistance);
+            if(mesh)lines.Add($"({vx},{vy}) renderer {mesh.name} d={meshDistance:F1} key={MeshKey(mesh.GetComponent<MeshFilter>().sharedMesh,mesh.sharedMaterials)} mats={string.Join(",",mesh.sharedMaterials.Select(m=>m?m.name+"/"+m.shader.name:"null"))} static={mesh.gameObject.isStatic} shadows={mesh.shadowCastingMode} layer={LayerMask.LayerToName(mesh.gameObject.layer)}");
+            if(!Physics.Raycast(ray,out var hit,2000f,~0,QueryTriggerInteraction.Ignore)){lines.Add($"({vx},{vy}) no collider");continue;}
             var r=hit.collider.GetComponentInParent<Renderer>()??hit.collider.GetComponentInChildren<Renderer>();
             string info=$"({vx},{vy}) {hit.collider.name} d={hit.distance:F1}";
             if(r!=null){
@@ -114,6 +120,18 @@ public static class CodexFidelityCapture
         var px=copy.GetPixels();UnityEngine.Object.DestroyImmediate(copy);
         c=new Color(px.Average(x=>x.r),px.Average(x=>x.g),px.Average(x=>x.b),px.Average(x=>x.a));averages[t]=c;return c;
     }
+    // The albedo texture: URP names first, then a Shader Graph texture property whose display name reads as a base map.
+    static readonly string[] baseKeys={"_BaseMap","_MainTex","_BaseColorMap","_Albedo","_AlbedoMap","_Diffuse","_BaseTexture"};
+    public static Texture BaseMap(Material m){
+        foreach(var k in baseKeys)if(m.HasProperty(k)&&m.GetTexture(k))return m.GetTexture(k);
+        var shader=m.shader;
+        for(int i=0;i<shader.GetPropertyCount();i++){
+            if(shader.GetPropertyType(i)!=UnityEngine.Rendering.ShaderPropertyType.Texture)continue;
+            var label=shader.GetPropertyDescription(i).ToLowerInvariant().Replace(" ","");
+            if(label is "basemap" or "basecolor" or "albedo" or "maintex" or "maintexture" or "diffuse" or "colormap"){var t=m.GetTexture(shader.GetPropertyName(i));if(t)return t;}
+        }
+        return null;
+    }
     static string SurfaceJson(Material m){
         if(!m)return "null";
         float F2(string k,float d)=>m.HasProperty(k)?m.GetFloat(k):d;
@@ -129,8 +147,11 @@ public static class CodexFidelityCapture
         var sc=m.HasProperty("_SpecColor")?m.GetColor("_SpecColor"):Color.black;
         if(specular && spec){var a=Average(spec);sc=new Color(a.r,a.g,a.b);}
         string Fl(float v)=>v.ToString("0.####",CultureInfo.InvariantCulture);
-        return "{\"shader\":\""+m.shader.name+"\",\"lit\":"+(lit?1:0)+",\"smoothness\":"+Fl(smooth)+",\"metallic\":"+Fl(metal)+",\"specular\":"+(specular?"["+Fl(sc.linear.r)+","+Fl(sc.linear.g)+","+Fl(sc.linear.b)+"]":"null")
-            +",\"env\":"+(F2("_EnvironmentReflections",1)>0&&!m.IsKeywordEnabled("_ENVIRONMENTREFLECTIONS_OFF")?1:0)+",\"highlights\":"+(F2("_SpecularHighlights",1)>0&&!m.IsKeywordEnabled("_SPECULARHIGHLIGHTS_OFF")?1:0)+"}";
+        var baseMap=BaseMap(m);
+        return "{\"material\":\""+m.name+"\",\"baseMap\":\""+(baseMap?AssetDatabase.GetAssetPath(baseMap):"")+"\",\"cull\":"+Fl(F2("_Cull",2))+",\"shader\":\""+m.shader.name+"\",\"lit\":"+(lit?1:0)+",\"smoothness\":"+Fl(smooth)+",\"metallic\":"+Fl(metal)+",\"specular\":"+(specular?"["+Fl(sc.linear.r)+","+Fl(sc.linear.g)+","+Fl(sc.linear.b)+"]":"null")
+            +",\"env\":"+(F2("_EnvironmentReflections",1)>0&&!m.IsKeywordEnabled("_ENVIRONMENTREFLECTIONS_OFF")?1:0)+",\"highlights\":"+(F2("_SpecularHighlights",1)>0&&!m.IsKeywordEnabled("_SPECULARHIGHLIGHTS_OFF")?1:0)
+            // Distance-faded foliage (Terrain sample Shader Graphs): fade start/end and the colour reached at the end.
+            +(m.HasProperty("Distance_Fade_Start")?",\"fade\":["+Fl(F2("Distance_Fade_Start",0))+","+Fl(F2("Distance_Fade_End",0))+"],\"fadeColor\":["+Fl(m.GetColor("Fade_Color").linear.r)+","+Fl(m.GetColor("Fade_Color").linear.g)+","+Fl(m.GetColor("Fade_Color").linear.b)+"]":"")+"}";
     }
     static void Surfaces(string path){
         var seen=new System.Collections.Generic.HashSet<string>();var rows=new System.Collections.Generic.List<string>();
@@ -142,6 +163,23 @@ public static class CodexFidelityCapture
         foreach(var t in UnityEngine.Object.FindObjectsByType<Terrain>(FindObjectsSortMode.None))
             rows.Add("\"terrain:"+t.name+"\":["+string.Join(",",t.terrainData.terrainLayers.Select(l=>l?"{\"smoothness\":"+l.smoothness.ToString(CultureInfo.InvariantCulture)+",\"metallic\":"+l.metallic.ToString(CultureInfo.InvariantCulture)+",\"maskMap\":"+(l.maskMapTexture?1:0)+",\"diffuseAlphaSmooth\":"+(l.diffuseTexture&&GraphicsFormatUtility.HasAlphaChannel(l.diffuseTexture.graphicsFormat)?1:0)+"}":"null"))+"]");
         File.WriteAllText(path,"{"+string.Join(",\n",rows)+"}");
+    }
+    // Nearest MeshRenderer hit by a ray, by triangle test (renderers need no collider).
+    static MeshRenderer PickRenderer(Ray ray,out float best){
+        best=float.MaxValue;MeshRenderer pick=null;
+        foreach(var r in UnityEngine.Object.FindObjectsByType<MeshRenderer>(FindObjectsSortMode.None)){
+            if(!r.enabled||!r.bounds.IntersectRay(ray))continue;
+            var f=r.GetComponent<MeshFilter>();if(!f||!f.sharedMesh)continue;
+            var v=f.sharedMesh.vertices;var t=f.sharedMesh.triangles;var m=r.localToWorldMatrix;
+            for(int i=0;i<t.Length;i+=3){
+                Vector3 a=m.MultiplyPoint3x4(v[t[i]]),b=m.MultiplyPoint3x4(v[t[i+1]]),c=m.MultiplyPoint3x4(v[t[i+2]]);
+                Vector3 e1=b-a,e2=c-a,pv=Vector3.Cross(ray.direction,e2);float det=Vector3.Dot(e1,pv);if(Mathf.Abs(det)<1e-8f)continue;
+                float inv=1/det;Vector3 tv=ray.origin-a;float u=Vector3.Dot(tv,pv)*inv;if(u<0||u>1)continue;
+                Vector3 qv=Vector3.Cross(tv,e1);float w=Vector3.Dot(ray.direction,qv)*inv;if(w<0||u+w>1)continue;
+                float d=Vector3.Dot(e2,qv)*inv;if(d>0&&d<best){best=d;pick=r;}
+            }
+        }
+        return pick;
     }
     static void Capture(SceneEntry entry,string pose,string path)
     {
@@ -220,6 +258,15 @@ public static class CodexFidelityCapture
         DumpStack(cam,data,Path.Combine(Path.GetDirectoryName(path),level+".post.json"));
         Probe(cam,Path.Combine(Path.GetDirectoryName(path),level+".probe.txt"));
         Surfaces(Path.Combine(Path.GetDirectoryName(path),level+".surfaces.json"));
+        // LODGroups: world reference point, size and the screen-relative height below which the last LOD is culled.
+        File.WriteAllLines(Path.Combine(Path.GetDirectoryName(path),level+".lods.txt"),
+            UnityEngine.Object.FindObjectsByType<LODGroup>(FindObjectsSortMode.None).Where(g=>g.enabled).Select(g=>{
+                var lods=g.GetLODs();var keys=lods.Length>0?lods[0].renderers.Where(r=>r is MeshRenderer&&r.GetComponent<MeshFilter>()&&r.GetComponent<MeshFilter>().sharedMesh)
+                    .Select(r=>MeshKey(r.GetComponent<MeshFilter>().sharedMesh,r.sharedMaterials)+"@"+F(r.transform.position.x)+","+F(r.transform.position.y)+","+F(r.transform.position.z)):Enumerable.Empty<string>();
+                var center=g.transform.TransformPoint(g.localReferencePoint);
+                float scale=Mathf.Max(Mathf.Abs(g.transform.lossyScale.x),Mathf.Max(Mathf.Abs(g.transform.lossyScale.y),Mathf.Abs(g.transform.lossyScale.z)));
+                return $"{g.name}|{F(center.x)},{F(center.y)},{F(center.z)}|{F(g.size*scale)}|{string.Join(",",lods.Select(l=>F(l.screenRelativeTransitionHeight)))}|{string.Join(";",keys)}";
+            }).Append("lodBias="+F(QualitySettings.lodBias)));
         File.WriteAllLines(Path.Combine(Path.GetDirectoryName(path),level+".particles.txt"),
             UnityEngine.Object.FindObjectsByType<ParticleSystem>(FindObjectsSortMode.None).Select(ps=>{
                 var r=ps.GetComponent<ParticleSystemRenderer>();var m=ps.main;

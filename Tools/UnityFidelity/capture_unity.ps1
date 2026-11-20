@@ -5,7 +5,7 @@
 #   -Out     folder for <name>[.<experiment>].png, .post.json (URP volume stack), .lights.txt, .ambient.json,
 #            .surfaces.json (per-mesh URP Lit parameters), .lightmaps.txt and .probe.txt
 param([Parameter(Mandatory)][string]$Source,[Parameter(Mandatory)][string]$Config,[Parameter(Mandatory)][string]$Poses,
-      [Parameter(Mandatory)][string]$Out,[string]$Experiment="",[int]$Quality=-1,[string]$Unity)
+      [Parameter(Mandatory)][string]$Out,[string]$Experiment="",[int]$Quality=-1,[string]$Unity,[string]$Probe="")
 $ErrorActionPreference="Stop"
 $Source=(Resolve-Path $Source).Path;$Config=(Resolve-Path $Config).Path;$Poses=(Resolve-Path $Poses).Path
 New-Item -ItemType Directory -Force $Out | Out-Null;$Out=(Resolve-Path $Out).Path
@@ -19,7 +19,7 @@ $folder=Join-Path $Source "Assets/Editor/CodexFidelity"
 $editorExisted=Test-Path (Join-Path $Source "Assets/Editor")
 New-Item -ItemType Directory -Force $folder | Out-Null
 Copy-Item (Join-Path $PSScriptRoot "UnityReference.cs.txt") (Join-Path $folder "CodexFidelityCapture.cs")
-$env:CODEX_FIDELITY_POSES=$Poses;$env:CODEX_FIDELITY_OUT=$Out;$env:CODEX_FIDELITY_CONFIG=$Config;$env:CODEX_FIDELITY_EXPERIMENT=$Experiment
+$env:CODEX_FIDELITY_POSES=$Poses;$env:CODEX_FIDELITY_OUT=$Out;$env:CODEX_FIDELITY_CONFIG=$Config;$env:CODEX_FIDELITY_EXPERIMENT=$Experiment;$env:CODEX_FIDELITY_PROBE=$Probe
 $env:CODEX_FIDELITY_QUALITY=if($Quality -ge 0){"$Quality"}else{$null}
 $log=Join-Path $Out "unity$(if($Experiment){'-'+$Experiment}).log"
 try{
@@ -32,5 +32,5 @@ try{
   Remove-Item -Recurse -Force $folder
   Remove-Item -Force "$folder.meta" -ErrorAction SilentlyContinue
   if(!$editorExisted){Remove-Item -Recurse -Force (Join-Path $Source "Assets/Editor");Remove-Item -Force (Join-Path $Source "Assets/Editor.meta") -ErrorAction SilentlyContinue}
-  foreach($k in "POSES","OUT","CONFIG","EXPERIMENT","QUALITY"){Remove-Item "Env:CODEX_FIDELITY_$k" -ErrorAction SilentlyContinue}
+  foreach($k in "POSES","OUT","CONFIG","EXPERIMENT","QUALITY","PROBE"){Remove-Item "Env:CODEX_FIDELITY_$k" -ErrorAction SilentlyContinue}
 }
