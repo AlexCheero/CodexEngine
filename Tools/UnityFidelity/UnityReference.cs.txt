@@ -1,0 +1,232 @@
+// Renders Unity scenes from camera poses captured by a native port, and records the scene's lighting,
+// post-processing and material data. capture_unity.ps1 installs it temporarily into the source project.
+using System;
+using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Text.RegularExpressions;
+using UnityEditor;
+using UnityEditor.SceneManagement;
+using UnityEngine;
+using UnityEngine.Rendering;
+using UnityEngine.Experimental.Rendering;
+using UnityEngine.Rendering.Universal;
+
+public static class CodexFidelityCapture
+{
+    [Serializable] public class SceneEntry { public string name, scene; public string[] additive = new string[0]; public string cameraPrefab; public bool forceCameraPrefab; }
+    [Serializable] public class Config { public SceneEntry[] scenes = new SceneEntry[0]; public int quality = -1; }
+    static string Env(string key) => Environment.GetEnvironmentVariable("CODEX_FIDELITY_" + key);
+
+    public static void Run()
+    {
+        try{
+            string native=Env("POSES"),output=Env("OUT");
+            var config=JsonUtility.FromJson<Config>(File.ReadAllText(Env("CONFIG")));
+            Directory.CreateDirectory(output);
+            ShaderUtil.allowAsyncCompilation=false;
+            int quality=int.Parse(Env("QUALITY")??config.quality.ToString());
+            if(quality>=0)QualitySettings.SetQualityLevel(quality,true);
+            foreach(var entry in config.scenes){string level=entry.name;
+                string pose=Path.Combine(native,level+".png.camera.json");
+                if(!File.Exists(pose)){Debug.Log("FIDELITY skip "+level);continue;}
+                string experiment=Env("EXPERIMENT");
+                Capture(entry,File.ReadAllText(pose),Path.Combine(output,level+(string.IsNullOrEmpty(experiment)?"":"."+experiment)+".png"));
+            }
+            Debug.Log("FIDELITY REFERENCE COMPLETE");
+            EditorApplication.Exit(0);
+        }catch(Exception e){Debug.LogException(e);EditorApplication.Exit(1);}
+    }
+    static Vector3 Vec(string json,string key)
+    {
+        var m=Regex.Match(json,"\""+key+"\":\\[([^\\]]+)\\]");
+        var p=m.Groups[1].Value.Split(',').Select(v=>float.Parse(v,CultureInfo.InvariantCulture)).ToArray();
+        return new Vector3(p[0],p[1],p[2]);
+    }
+    static float Num(string json,string key)=>float.Parse(Regex.Match(json,"\""+key+"\":([-0-9.eE]+)").Groups[1].Value,CultureInfo.InvariantCulture);
+    static string F(float v)=>v.ToString("R",CultureInfo.InvariantCulture);
+    static string V4(Vector4 v)=>$"[{F(v.x)},{F(v.y)},{F(v.z)},{F(v.w)}]";
+    static string C(Color c)=>$"[{F(c.r)},{F(c.g)},{F(c.b)},{F(c.a)}]";
+    // Writes the blended URP volume stack seen by the camera (default profile plus scene volumes).
+    static void DumpStack(Camera cam,UniversalAdditionalCameraData data,string path)
+    {
+        var s=VolumeManager.instance.CreateStack();
+        VolumeManager.instance.Update(s,cam.transform,data.volumeLayerMask);
+        var b=s.GetComponent<Bloom>();var t=s.GetComponent<Tonemapping>();var ca=s.GetComponent<ColorAdjustments>();
+        var lgg=s.GetComponent<LiftGammaGain>();var smh=s.GetComponent<ShadowsMidtonesHighlights>();var v=s.GetComponent<Vignette>();
+        var ch=s.GetComponent<ChromaticAberration>();var wb=s.GetComponent<WhiteBalance>();var fg=s.GetComponent<FilmGrain>();
+        var asset=(UniversalRenderPipelineAsset)GraphicsSettings.currentRenderPipeline;
+        string json="{"+
+            $"\"renderScale\":{F(asset.renderScale)},\"msaa\":{asset.msaaSampleCount},\"hdr\":{(cam.allowHDR&&asset.supportsHDR?1:0)},\"postProcessing\":{(data.renderPostProcessing?1:0)},"+
+            $"\"tonemap\":{(int)t.mode.value},"+
+            $"\"postExposure\":{F(ca.postExposure.value)},\"contrast\":{F(ca.contrast.value)},\"saturation\":{F(ca.saturation.value)},"+
+            $"\"hueShift\":{F(ca.hueShift.value)},\"colorFilter\":{C(ca.colorFilter.value)},"+
+            $"\"temperature\":{F(wb.temperature.value)},\"tint\":{F(wb.tint.value)},"+
+            $"\"lift\":{V4(lgg.lift.value)},\"gamma\":{V4(lgg.gamma.value)},\"gain\":{V4(lgg.gain.value)},"+
+            $"\"shadows\":{V4(smh.shadows.value)},\"midtones\":{V4(smh.midtones.value)},\"highlights\":{V4(smh.highlights.value)},"+
+            $"\"smhLimits\":[{F(smh.shadowsStart.value)},{F(smh.shadowsEnd.value)},{F(smh.highlightsStart.value)},{F(smh.highlightsEnd.value)}],"+
+            $"\"bloom\":[{F(b.intensity.value)},{F(b.threshold.value)},{F(b.scatter.value)},{F(b.clamp.value)}],\"bloomTint\":{C(b.tint.value)},\"bloomHQ\":{(b.highQualityFiltering.value?1:0)},\"bloomMax\":{b.maxIterations.value},\"bloomDownscale\":{(int)b.downscale.value},"+
+            $"\"vignette\":[{F(v.intensity.value)},{F(v.smoothness.value)},{(v.rounded.value?1:0)},{F(v.center.value.x)},{F(v.center.value.y)}],\"vignetteColor\":{C(v.color.value)},"+
+            $"\"chromatic\":{F(ch.intensity.value)},\"grain\":{F(fg.intensity.value)}"+
+            "}";
+        File.WriteAllText(path,json);
+    }
+    // Lists the renderer and material under a grid of screen points.
+    static void Probe(Camera cam,string path)
+    {
+        Physics.SyncTransforms();
+        var lines=new System.Collections.Generic.List<string>();
+        foreach(var vy in new[]{.15f,.4f,.6f,.85f})foreach(var vx in new[]{.15f,.5f,.85f}){
+            var ray=cam.ViewportPointToRay(new Vector3(vx,1-vy,0));
+            if(!Physics.Raycast(ray,out var hit,2000f,~0,QueryTriggerInteraction.Ignore)){lines.Add($"({vx},{vy}) sky");continue;}
+            var r=hit.collider.GetComponentInParent<Renderer>()??hit.collider.GetComponentInChildren<Renderer>();
+            string info=$"({vx},{vy}) {hit.collider.name} d={hit.distance:F1}";
+            if(r!=null){
+                info+=$" renderer={r.name} lm={r.lightmapIndex} probes={r.lightProbeUsage}";
+                foreach(var m in r.sharedMaterials){
+                    if(m==null)continue;info+=$" || mat={m.name} shader={m.shader.name}";
+                    foreach(var prop in new[]{"_BaseColor","_Color","_EmissionColor","_SpecColor"})if(m.HasProperty(prop))info+=$" {prop}={m.GetColor(prop)}";
+                    foreach(var prop in new[]{"_Smoothness","_Glossiness","_Metallic","_BumpScale","_Cutoff","_Surface","_WorkflowMode","_SpecularHighlights","_EnvironmentReflections"})if(m.HasProperty(prop))info+=$" {prop}={m.GetFloat(prop)}";
+                    info+=" kw="+string.Join(",",m.shaderKeywords);
+                }
+            }
+            lines.Add(info);
+        }
+        File.WriteAllLines(path,lines);
+    }
+    // Per native mesh key (same hash as WorldExport.Model): URP Lit surface parameters per submesh.
+    static string MeshKey(Mesh mesh,Material[] mats){
+        string Id(UnityEngine.Object o){AssetDatabase.TryGetGUIDAndLocalFileIdentifier(o,out string guid,out long id);return guid+"~"+id+"~"+o.name;}
+        var key=Id(mesh)+"|"+string.Join("|",mats.Select(x=>x?Id(x):""));
+        using var sha=System.Security.Cryptography.SHA256.Create();
+        return "Meshes/"+BitConverter.ToString(sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(key)),0,10).Replace("-","").ToLowerInvariant()+".brm";
+    }
+    static readonly System.Collections.Generic.Dictionary<Texture,Color> averages=new System.Collections.Generic.Dictionary<Texture,Color>();
+    static Color Average(Texture t){
+        if(averages.TryGetValue(t,out var c))return c;
+        var rt=RenderTexture.GetTemporary(64,64,0,RenderTextureFormat.ARGBFloat,RenderTextureReadWrite.Linear);
+        Graphics.Blit(t,rt);RenderTexture.active=rt;
+        var copy=new Texture2D(64,64,TextureFormat.RGBAFloat,false,true);copy.ReadPixels(new Rect(0,0,64,64),0,0);RenderTexture.active=null;RenderTexture.ReleaseTemporary(rt);
+        var px=copy.GetPixels();UnityEngine.Object.DestroyImmediate(copy);
+        c=new Color(px.Average(x=>x.r),px.Average(x=>x.g),px.Average(x=>x.b),px.Average(x=>x.a));averages[t]=c;return c;
+    }
+    static string SurfaceJson(Material m){
+        if(!m)return "null";
+        float F2(string k,float d)=>m.HasProperty(k)?m.GetFloat(k):d;
+        bool lit=m.shader.name.Contains("Universal Render Pipeline/Lit")||m.shader.name.Contains("Terrain/Lit")||m.shader.name.Contains("Complex Lit");
+        float smooth=F2("_Smoothness",F2("_Glossiness",.5f)),metal=F2("_Metallic",0);
+        var gloss=m.HasProperty("_MetallicGlossMap")?m.GetTexture("_MetallicGlossMap"):null;
+        var spec=m.HasProperty("_SpecGlossMap")?m.GetTexture("_SpecGlossMap"):null;
+        bool specular=F2("_WorkflowMode",1)==0;
+        bool albedoAlpha=F2("_SmoothnessTextureChannel",0)==1;
+        if(albedoAlpha && m.HasProperty("_BaseMap") && m.GetTexture("_BaseMap"))smooth*=Average(m.GetTexture("_BaseMap")).a;
+        else if(!specular && gloss){var a=Average(gloss);smooth*=a.a;metal=a.r;}
+        else if(specular && spec){var a=Average(spec);smooth*=a.a;}
+        var sc=m.HasProperty("_SpecColor")?m.GetColor("_SpecColor"):Color.black;
+        if(specular && spec){var a=Average(spec);sc=new Color(a.r,a.g,a.b);}
+        string Fl(float v)=>v.ToString("0.####",CultureInfo.InvariantCulture);
+        return "{\"shader\":\""+m.shader.name+"\",\"lit\":"+(lit?1:0)+",\"smoothness\":"+Fl(smooth)+",\"metallic\":"+Fl(metal)+",\"specular\":"+(specular?"["+Fl(sc.linear.r)+","+Fl(sc.linear.g)+","+Fl(sc.linear.b)+"]":"null")
+            +",\"env\":"+(F2("_EnvironmentReflections",1)>0&&!m.IsKeywordEnabled("_ENVIRONMENTREFLECTIONS_OFF")?1:0)+",\"highlights\":"+(F2("_SpecularHighlights",1)>0&&!m.IsKeywordEnabled("_SPECULARHIGHLIGHTS_OFF")?1:0)+"}";
+    }
+    static void Surfaces(string path){
+        var seen=new System.Collections.Generic.HashSet<string>();var rows=new System.Collections.Generic.List<string>();
+        foreach(var r in UnityEngine.Object.FindObjectsByType<MeshRenderer>(FindObjectsSortMode.None)){
+            var f=r.GetComponent<MeshFilter>();if(!f||!f.sharedMesh||!r.enabled)continue;
+            var key=MeshKey(f.sharedMesh,r.sharedMaterials);if(!seen.Add(key))continue;
+            rows.Add("\""+key+"\":["+string.Join(",",Enumerable.Range(0,f.sharedMesh.subMeshCount).Select(i=>SurfaceJson(r.sharedMaterials.Length>0?r.sharedMaterials[Math.Min(i,r.sharedMaterials.Length-1)]:null)))+"]");
+        }
+        foreach(var t in UnityEngine.Object.FindObjectsByType<Terrain>(FindObjectsSortMode.None))
+            rows.Add("\"terrain:"+t.name+"\":["+string.Join(",",t.terrainData.terrainLayers.Select(l=>l?"{\"smoothness\":"+l.smoothness.ToString(CultureInfo.InvariantCulture)+",\"metallic\":"+l.metallic.ToString(CultureInfo.InvariantCulture)+",\"maskMap\":"+(l.maskMapTexture?1:0)+",\"diffuseAlphaSmooth\":"+(l.diffuseTexture&&GraphicsFormatUtility.HasAlphaChannel(l.diffuseTexture.graphicsFormat)?1:0)+"}":"null"))+"]");
+        File.WriteAllText(path,"{"+string.Join(",\n",rows)+"}");
+    }
+    static void Capture(SceneEntry entry,string pose,string path)
+    {
+        string level=entry.name;
+        EditorSceneManager.OpenScene(entry.scene,OpenSceneMode.Single);
+        foreach(var extra in entry.additive)EditorSceneManager.OpenScene(extra,OpenSceneMode.Additive);
+        var cameras=UnityEngine.Object.FindObjectsByType<Camera>(FindObjectsInactive.Exclude,FindObjectsSortMode.None);
+        Camera cam=cameras.Where(c=>c.enabled && c.targetTexture==null).OrderByDescending(c=>c.CompareTag("MainCamera")).ThenByDescending(c=>c.depth).FirstOrDefault();
+        bool hasVolume=UnityEngine.Object.FindObjectsByType<Volume>(FindObjectsSortMode.None).Any(v=>v.isGlobal && v.enabled);
+        if(!string.IsNullOrEmpty(entry.cameraPrefab) && (cam==null || entry.forceCameraPrefab || !hasVolume)){
+            var go=(GameObject)PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(entry.cameraPrefab));
+            foreach(var other in cameras)other.enabled=false;
+            cam=go.GetComponentsInChildren<Camera>(true).First(c=>c.targetTexture==null);
+            cam.gameObject.SetActive(true);cam.enabled=true;
+        }
+        foreach(var c in cameras)if(c!=cam && c.targetTexture==null)c.enabled=false;
+        int w=(int)Num(pose,"width"),h=(int)Num(pose,"height");
+        cam.transform.SetPositionAndRotation(Vec(pose,"eye"),Quaternion.LookRotation(Vec(pose,"forward"),Vec(pose,"up")));
+        cam.fieldOfView=Num(pose,"fov");cam.aspect=(float)w/h;
+        var data=cam.GetUniversalAdditionalCameraData();
+        Debug.Log($"FIDELITY {level}: camera {cam.name} post={data.renderPostProcessing} aa={data.antialiasing} hdr={cam.allowHDR} volumes={UnityEngine.Object.FindObjectsByType<Volume>(FindObjectsSortMode.None).Length}");
+        foreach(var ps in UnityEngine.Object.FindObjectsByType<ParticleSystem>(FindObjectsSortMode.None))
+            if(ps.main.playOnAwake && ps.transform.parent?.GetComponentInParent<ParticleSystem>()==null){ps.useAutoRandomSeed=false;ps.Simulate(3f,true,true,true);}
+        switch(Env("EXPERIMENT")){
+            case "nofog":RenderSettings.fog=false;break;
+            case "skyonly":foreach(var r in UnityEngine.Object.FindObjectsByType<Renderer>(FindObjectsSortMode.None))r.enabled=false;
+                foreach(var t in UnityEngine.Object.FindObjectsByType<Terrain>(FindObjectsSortMode.None))t.drawHeightmap=t.drawTreesAndFoliage=false;break;
+            case "nopost":data.renderPostProcessing=false;break;
+            case "particlesblack":case "particleswhite":{
+                data.renderPostProcessing=false;
+                foreach(var r in UnityEngine.Object.FindObjectsByType<Renderer>(FindObjectsSortMode.None))if(!(r is ParticleSystemRenderer))r.enabled=false;
+                foreach(var t in UnityEngine.Object.FindObjectsByType<Terrain>(FindObjectsSortMode.None))t.drawHeightmap=t.drawTreesAndFoliage=false;
+                cam.clearFlags=CameraClearFlags.SolidColor;cam.backgroundColor=Env("EXPERIMENT")=="particlesblack"?Color.black:Color.white;
+                break;}
+            case "particlecolor":data.renderPostProcessing=false;foreach(var ps in UnityEngine.Object.FindObjectsByType<ParticleSystem>(FindObjectsSortMode.None)){var mm=ps.main;mm.startColor=new Color(1,0,0,.75f);var col=ps.colorOverLifetime;col.enabled=false;ps.Simulate(3f,true,true,true);}break;
+            case "particlenoinstancing":data.renderPostProcessing=false;foreach(var pr in UnityEngine.Object.FindObjectsByType<ParticleSystemRenderer>(FindObjectsSortMode.None))pr.enableGPUInstancing=false;break;
+            case "noparticles":data.renderPostProcessing=false;foreach(var pr in UnityEngine.Object.FindObjectsByType<ParticleSystemRenderer>(FindObjectsSortMode.None))pr.enabled=false;break;
+            case "noreflect":data.renderPostProcessing=false;RenderSettings.reflectionIntensity=0;RenderSettings.customReflectionTexture=null;RenderSettings.defaultReflectionMode=DefaultReflectionMode.Custom;
+                foreach(var probe in UnityEngine.Object.FindObjectsByType<ReflectionProbe>(FindObjectsSortMode.None))probe.enabled=false;break;
+        }
+        Debug.Log($"FIDELITY {level}: fog={RenderSettings.fog} mode={RenderSettings.fogMode} density={RenderSettings.fogDensity} start={RenderSettings.fogStartDistance} end={RenderSettings.fogEndDistance} color={RenderSettings.fogColor} skybox={RenderSettings.skybox?.shader.name} ambient={RenderSettings.ambientMode} {RenderSettings.ambientLight} far={cam.farClipPlane}");
+        var rt=new RenderTexture(w,h,24,RenderTextureFormat.ARGB32,RenderTextureReadWrite.sRGB){antiAliasing=1};
+        var request=new RenderPipeline.StandardRequest{destination=rt};
+        for(int i=0;i<4;i++){
+            if(RenderPipeline.SupportsRenderRequest(cam,request))RenderPipeline.SubmitRenderRequest(cam,request);
+            else{cam.targetTexture=rt;cam.Render();cam.targetTexture=null;}
+        }
+        RenderTexture.active=rt;
+        var tex=new Texture2D(w,h,TextureFormat.RGB24,false);tex.ReadPixels(new Rect(0,0,w,h),0,0);tex.Apply();
+        RenderTexture.active=null;
+        File.WriteAllBytes(path,tex.EncodeToPNG());
+        DumpStack(cam,data,Path.Combine(Path.GetDirectoryName(path),level+".post.json"));
+        Probe(cam,Path.Combine(Path.GetDirectoryName(path),level+".probe.txt"));
+        Surfaces(Path.Combine(Path.GetDirectoryName(path),level+".surfaces.json"));
+        var lm=new System.Collections.Generic.List<string>();
+        for(int i=0;i<LightmapSettings.lightmaps.Length;i++){
+            var t=LightmapSettings.lightmaps[i].lightmapColor;if(!t)continue;
+            Color[] px;
+            if(t.isReadable)px=t.GetPixels();
+            else{
+                var lmrt=RenderTexture.GetTemporary(t.width,t.height,0,RenderTextureFormat.ARGBFloat,RenderTextureReadWrite.Linear);
+                Graphics.Blit(t,lmrt);RenderTexture.active=lmrt;
+                var copy=new Texture2D(t.width,t.height,TextureFormat.RGBAFloat,false,true);copy.ReadPixels(new Rect(0,0,t.width,t.height),0,0);
+                RenderTexture.active=null;RenderTexture.ReleaseTemporary(lmrt);px=copy.GetPixels();
+            }
+            string stats=px==null?"unreadable":$"mean={px.Average(c=>c.r):F4},{px.Average(c=>c.g):F4},{px.Average(c=>c.b):F4} a={px.Average(c=>c.a):F4} max={px.Max(c=>Mathf.Max(c.r,Mathf.Max(c.g,c.b))):F3}";
+            lm.Add($"{i} {t.name} {t.format} {t.width}x{t.height} {stats} encoding={LightmapSettings.lightmapsMode} hdr={GraphicsFormatUtility.IsHDRFormat(t.graphicsFormat)}");
+        }
+        File.WriteAllLines(Path.Combine(Path.GetDirectoryName(path),level+".lightmaps.txt"),lm);
+        var lights=new System.Collections.Generic.List<string>();
+        foreach(var l in UnityEngine.Object.FindObjectsByType<Light>(FindObjectsSortMode.None)){
+            if(!l.isActiveAndEnabled)continue;
+            var ld=l.GetComponent<UniversalAdditionalLightData>();
+            lights.Add($"{l.type} {l.name} color={l.color} intensity={l.intensity} range={l.range} bake={l.lightmapBakeType} shadows={l.shadows} strength={l.shadowStrength} bias={l.shadowBias} normalBias={l.shadowNormalBias} cull={l.cullingMask} render={l.renderMode} pos={l.transform.position} fwd={l.transform.forward}");
+        }
+        foreach(var t in UnityEngine.Object.FindObjectsByType<Terrain>(FindObjectsSortMode.None))
+            lights.Add($"Terrain {t.name} mat={(t.materialTemplate?t.materialTemplate.shader.name:"default")} lm={t.lightmapIndex} trees={t.terrainData.treeInstanceCount} draw={t.drawTreesAndFoliage} treeDist={t.treeDistance} billboard={t.treeBillboardDistance} detailDist={t.detailObjectDistance} layers={string.Join(",",t.terrainData.terrainLayers.Select(x=>x?x.name+"/"+x.smoothness+"/"+x.metallic+"/"+x.specular:"null"))}");
+        lights.Add($"ambientMode={RenderSettings.ambientMode} sky={RenderSettings.ambientSkyColor} equator={RenderSettings.ambientEquatorColor} ground={RenderSettings.ambientGroundColor} intensity={RenderSettings.ambientIntensity} reflection={RenderSettings.defaultReflectionMode} reflIntensity={RenderSettings.reflectionIntensity} bounces={RenderSettings.reflectionBounces} sun={(RenderSettings.sun?RenderSettings.sun.name:"none")} subtractive={RenderSettings.subtractiveShadowColor}");
+        lights.Add($"shadowDistance={QualitySettings.shadowDistance} urpShadowDistance={((UniversalRenderPipelineAsset)GraphicsSettings.currentRenderPipeline).shadowDistance} cascades={((UniversalRenderPipelineAsset)GraphicsSettings.currentRenderPipeline).shadowCascadeCount}");
+        foreach(var probe in UnityEngine.Object.FindObjectsByType<ReflectionProbe>(FindObjectsSortMode.None))lights.Add($"ReflectionProbe {probe.name} mode={probe.mode} tex={(probe.texture?probe.texture.name:"none")} intensity={probe.intensity} pos={probe.transform.position} size={probe.size}");
+        {
+            var sh=RenderSettings.ambientProbe;var dirs=new[]{Vector3.up,Vector3.down,Vector3.forward,Vector3.right};var res=new Color[4];
+            sh.Evaluate(dirs,res);
+            lights.Add("ambientProbe up="+res[0]+" down="+res[1]+" fwd="+res[2]+" right="+res[3]);
+            var axes=new[]{Vector3.right,Vector3.left,Vector3.up,Vector3.down,Vector3.forward,Vector3.back};var cube=new Color[6];sh.Evaluate(axes,cube);
+            File.WriteAllText(Path.Combine(Path.GetDirectoryName(path),level+".ambient.json"),"["+string.Join(",",cube.Select(c=>"["+c.r.ToString("R",CultureInfo.InvariantCulture)+","+c.g.ToString("R",CultureInfo.InvariantCulture)+","+c.b.ToString("R",CultureInfo.InvariantCulture)+"]"))+"]");
+        }
+        lights.Add($"lightProbes={(LightmapSettings.lightProbes?LightmapSettings.lightProbes.count:0)}");
+        File.WriteAllLines(Path.Combine(Path.GetDirectoryName(path),level+".lights.txt"),lights);
+        Debug.Log("FIDELITY captured "+path);
+    }
+}
