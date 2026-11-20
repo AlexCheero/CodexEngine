@@ -17,6 +17,7 @@ public static class CodexFidelityCapture
     [Serializable] public class SceneEntry { public string name, scene; public string[] additive = new string[0]; public string cameraPrefab; public bool forceCameraPrefab; }
     [Serializable] public class Config { public SceneEntry[] scenes = new SceneEntry[0]; public int quality = -1; }
     static string Env(string key) => Environment.GetEnvironmentVariable("CODEX_FIDELITY_" + key);
+    static string experiment = "";
 
     public static void Run()
     {
@@ -30,8 +31,11 @@ public static class CodexFidelityCapture
             foreach(var entry in config.scenes){string level=entry.name;
                 string pose=Path.Combine(native,level+".png.camera.json");
                 if(!File.Exists(pose)){Debug.Log("FIDELITY skip "+level);continue;}
-                string experiment=Env("EXPERIMENT");
-                Capture(entry,File.ReadAllText(pose),Path.Combine(output,level+(string.IsNullOrEmpty(experiment)?"":"."+experiment)+".png"));
+                // CODEX_FIDELITY_EXPERIMENT may list several experiments; one editor session renders them all.
+                foreach(var name in (Env("EXPERIMENT")??"").Split(',')){
+                    experiment=name.Trim();
+                    Capture(entry,File.ReadAllText(pose),Path.Combine(output,level+(experiment.Length==0?"":"."+experiment)+".png"));
+                }
             }
             Debug.Log("FIDELITY REFERENCE COMPLETE");
             EditorApplication.Exit(0);
@@ -161,16 +165,31 @@ public static class CodexFidelityCapture
         Debug.Log($"FIDELITY {level}: camera {cam.name} post={data.renderPostProcessing} aa={data.antialiasing} hdr={cam.allowHDR} volumes={UnityEngine.Object.FindObjectsByType<Volume>(FindObjectsSortMode.None).Length}");
         foreach(var ps in UnityEngine.Object.FindObjectsByType<ParticleSystem>(FindObjectsSortMode.None))
             if(ps.main.playOnAwake && ps.transform.parent?.GetComponentInParent<ParticleSystem>()==null){ps.useAutoRandomSeed=false;ps.Simulate(3f,true,true,true);}
-        switch(Env("EXPERIMENT")){
+        switch(experiment){
             case "nofog":RenderSettings.fog=false;break;
             case "skyonly":foreach(var r in UnityEngine.Object.FindObjectsByType<Renderer>(FindObjectsSortMode.None))r.enabled=false;
                 foreach(var t in UnityEngine.Object.FindObjectsByType<Terrain>(FindObjectsSortMode.None))t.drawHeightmap=t.drawTreesAndFoliage=false;break;
             case "nopost":data.renderPostProcessing=false;break;
+            case var keepExp when keepExp!=null && keepExp.StartsWith("postkeep-"):
+            case "postidentity":case "postbloomonly":{
+                string keep=experiment.StartsWith("postkeep-")?experiment.Substring(9):"";
+                // A global override volume that neutralises every grading step (and bloom unless kept).
+                var profile=ScriptableObject.CreateInstance<VolumeProfile>();
+                if(keep!="tonemap"){var t=profile.Add<Tonemapping>(true);t.mode.value=TonemappingMode.None;}
+                var ca=profile.Add<ColorAdjustments>(false);ca.hueShift.Override(0);ca.colorFilter.Override(Color.white);
+                if(keep!="exposure")ca.postExposure.Override(0);if(keep!="contrast")ca.contrast.Override(0);if(keep!="saturation")ca.saturation.Override(0);
+                if(keep!="lgg"){var lgg=profile.Add<LiftGammaGain>(true);lgg.lift.value=new Vector4(1,1,1,0);lgg.gamma.value=new Vector4(1,1,1,0);lgg.gain.value=new Vector4(1,1,1,0);}
+                if(keep!="smh"){var smh=profile.Add<ShadowsMidtonesHighlights>(true);smh.shadows.value=smh.midtones.value=smh.highlights.value=new Vector4(1,1,1,0);}
+                if(keep!="vignette"){var v=profile.Add<Vignette>(true);v.intensity.value=0;}var chroma=profile.Add<ChromaticAberration>(true);chroma.intensity.value=0;
+                var wb=profile.Add<WhiteBalance>(true);wb.temperature.value=0;wb.tint.value=0;
+                if(experiment!="postbloomonly"){var bl=profile.Add<Bloom>(true);bl.intensity.value=0;}
+                var go=new GameObject("FidelityOverride");var vol=go.AddComponent<Volume>();vol.isGlobal=true;vol.priority=100000;vol.sharedProfile=profile;
+                break;}
             case "particlesblack":case "particleswhite":{
                 data.renderPostProcessing=false;
                 foreach(var r in UnityEngine.Object.FindObjectsByType<Renderer>(FindObjectsSortMode.None))if(!(r is ParticleSystemRenderer))r.enabled=false;
                 foreach(var t in UnityEngine.Object.FindObjectsByType<Terrain>(FindObjectsSortMode.None))t.drawHeightmap=t.drawTreesAndFoliage=false;
-                cam.clearFlags=CameraClearFlags.SolidColor;cam.backgroundColor=Env("EXPERIMENT")=="particlesblack"?Color.black:Color.white;
+                cam.clearFlags=CameraClearFlags.SolidColor;cam.backgroundColor=experiment=="particlesblack"?Color.black:Color.white;
                 break;}
             case "particlecolor":data.renderPostProcessing=false;foreach(var ps in UnityEngine.Object.FindObjectsByType<ParticleSystem>(FindObjectsSortMode.None)){var mm=ps.main;mm.startColor=new Color(1,0,0,.75f);var col=ps.colorOverLifetime;col.enabled=false;ps.Simulate(3f,true,true,true);}break;
             case "particlenoinstancing":data.renderPostProcessing=false;foreach(var pr in UnityEngine.Object.FindObjectsByType<ParticleSystemRenderer>(FindObjectsSortMode.None))pr.enableGPUInstancing=false;break;
@@ -179,14 +198,23 @@ public static class CodexFidelityCapture
                 foreach(var probe in UnityEngine.Object.FindObjectsByType<ReflectionProbe>(FindObjectsSortMode.None))probe.enabled=false;break;
         }
         Debug.Log($"FIDELITY {level}: fog={RenderSettings.fog} mode={RenderSettings.fogMode} density={RenderSettings.fogDensity} start={RenderSettings.fogStartDistance} end={RenderSettings.fogEndDistance} color={RenderSettings.fogColor} skybox={RenderSettings.skybox?.shader.name} ambient={RenderSettings.ambientMode} {RenderSettings.ambientLight} far={cam.farClipPlane}");
-        var rt=new RenderTexture(w,h,24,RenderTextureFormat.ARGB32,RenderTextureReadWrite.sRGB){antiAliasing=1};
+        // "hdr": the camera's float colour without post-processing, written at -3 EV so values up to 8 stay visible.
+        bool hdr=experiment=="hdr";
+        if(hdr)data.renderPostProcessing=false;
+        var rt=hdr?new RenderTexture(w,h,24,RenderTextureFormat.ARGBHalf,RenderTextureReadWrite.Linear){antiAliasing=1}
+                  :new RenderTexture(w,h,24,RenderTextureFormat.ARGB32,RenderTextureReadWrite.sRGB){antiAliasing=1};
         var request=new RenderPipeline.StandardRequest{destination=rt};
         for(int i=0;i<4;i++){
             if(RenderPipeline.SupportsRenderRequest(cam,request))RenderPipeline.SubmitRenderRequest(cam,request);
             else{cam.targetTexture=rt;cam.Render();cam.targetTexture=null;}
         }
         RenderTexture.active=rt;
-        var tex=new Texture2D(w,h,TextureFormat.RGB24,false);tex.ReadPixels(new Rect(0,0,w,h),0,0);tex.Apply();
+        var tex=new Texture2D(w,h,TextureFormat.RGB24,false);
+        if(hdr){
+            var floats=new Texture2D(w,h,TextureFormat.RGBAHalf,false,true);floats.ReadPixels(new Rect(0,0,w,h),0,0);
+            tex.SetPixels(floats.GetPixels().Select(c=>new Color(c.r/8,c.g/8,c.b/8,1).gamma).ToArray());UnityEngine.Object.DestroyImmediate(floats);
+        }else tex.ReadPixels(new Rect(0,0,w,h),0,0);
+        tex.Apply();
         RenderTexture.active=null;
         File.WriteAllBytes(path,tex.EncodeToPNG());
         DumpStack(cam,data,Path.Combine(Path.GetDirectoryName(path),level+".post.json"));

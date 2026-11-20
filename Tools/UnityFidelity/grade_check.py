@@ -32,9 +32,11 @@ def grade(c, s, apply_vignette=True):
     sh = 1 - smooth(lim[0], lim[1], l); hi = smooth(lim[2], lim[3], l)
     def tone(v): off = v[3] * (1 if v[3] < 0 else 4); return np.maximum(dec(np.array(v[:3])) + off, 0)
     c = c * (tone(s["shadows"]) * sh[..., None] + tone(s["midtones"]) * (1 - sh - hi)[..., None] + tone(s["highlights"]) * hi[..., None])
-    ls, lw = prep(s["lift"], .2); lift = ls + lw
-    gs, gw = prep(s["gain"], .8); gain = gs + gw + 1
-    ms, mw = prep(s["gamma"], .8); inv = 1 / np.maximum(ms + mw + 1, 1e-3)
+    def centred(v, k):
+        x = dec(np.array(v[:3])) * k; return x - luma(x)
+    lift = centred(s["lift"], .15) + s["lift"][3]
+    gain = centred(s["gain"], .8) + s["gain"][3] + 1
+    inv = 1 / np.maximum(centred(s["gamma"], .8) + s["gamma"][3] + 1, 1e-3)
     c = c * gain + lift
     c = np.maximum(np.sign(c) * np.abs(c) ** inv, 0)
     l = luma(c)[..., None]; c = l + (s["saturation"] / 100 + 1) * (c - l)

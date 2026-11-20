@@ -67,13 +67,17 @@ public sealed class UrpPostProcessing : IDisposable
     static float GammaToLinear(float c) => c <= .04045f ? c / 12.92f : MathF.Pow((c + .055f) / 1.055f, 2.4f);
     static float Luminance(Vector3 c) => c.X * .2126729f + c.Y * .7151522f + c.Z * .072175f;
     static Vector3 V3(float[] v) => new(v[0], v[1], v[2]);
-    static Vector3 Centered(float[] c, float scale, out float w) { var s = V3(c) * scale; w = c[3] * scale; return s - new Vector3(Luminance(s)); }
-    // ColorUtils.PrepareLiftGammaGain
-    static Vector3 Lift(float[] c) { var s = Centered(c, .2f, out float w); return s + new Vector3(w); }
-    static Vector3 Gain(float[] c) { var s = Centered(c, .8f, out float w); return s + new Vector3(w + 1); }
+    // ColorUtils.PrepareLiftGammaGain (core RP 17): colours are linearized and centred on their luminance; w is an offset.
+    static Vector3 Centered(float[] c, float scale)
+    {
+        var s = new Vector3(GammaToLinear(c[0]), GammaToLinear(c[1]), GammaToLinear(c[2])) * scale;
+        return s - new Vector3(Luminance(s));
+    }
+    static Vector3 Lift(float[] c) => Centered(c, .15f) + new Vector3(c[3]);
+    static Vector3 Gain(float[] c) => Centered(c, .8f) + new Vector3(c[3] + 1);
     static Vector3 InverseGamma(float[] c)
     {
-        var s = Centered(c, .8f, out float w) + new Vector3(w + 1);
+        var s = Centered(c, .8f) + new Vector3(c[3] + 1);
         return new(1 / MathF.Max(s.X, .001f), 1 / MathF.Max(s.Y, .001f), 1 / MathF.Max(s.Z, .001f));
     }
     // ColorUtils.PrepareShadowsMidtonesHighlights

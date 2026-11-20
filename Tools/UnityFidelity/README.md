@@ -29,7 +29,9 @@ Per scene it writes:
 
 Experiments isolate one contribution: `nopost`, `nofog`, `skyonly`, `noreflect`, `noparticles`, `particlecolor`
 (all particles red), `particlenoinstancing`, `particlesblack`/`particleswhite` (particles alone over black/white,
-which solves particle colour and coverage).
+which solves particle colour and coverage), `hdr` (float scene colour without post at -3 EV), `postidentity`,
+`postbloomonly` and `postkeep-<exposure|contrast|saturation|lgg|smh|tonemap|vignette>` (an override volume keeps one
+grading step). `-Experiment a,b,c` renders several experiments in one editor session, which saves the ~1.5 min startup per run.
 
 Edit-mode renders don't run game scripts. Materials whose inputs scripts set at runtime can look different from the game.
 
@@ -37,7 +39,8 @@ Edit-mode renders don't run game scripts. Materials whose inputs scripts set at 
 
 `compare.py <unity-dir> <native-dir> <out-dir> names…` prints luminance percentiles, saturation and a 3×3 ratio grid
 and writes side-by-side sheets. `grade_check.py` applies the `UrpPostProcessing` grade to a Unity `nopost` frame to
-validate the grading port offline. `graph_dump.py` prints a Shader Graph's nodes and edges for porting.
+validate the grading port offline, and `component_check.py` compares each grading step with the `postkeep-*`
+experiments. `graph_dump.py` prints a Shader Graph's nodes and edges for porting.
 
 ## Conversions
 
@@ -48,5 +51,11 @@ validate the grading port offline. `graph_dump.py` prints a Shader Graph's nodes
 ## Runtime counterparts
 
 - `UrpPostProcessing` + `Shaders/UrpPost.fx`: bloom pyramid, chromatic aberration, vignette, HDR grading, Neutral/ACES tonemapping.
+- `Shaders/UrpBrdf.hlsl`: URP Lit metallic BRDF (direct specular term, environment BRDF, reflection mip).
 - `Shaders/UnityLighting.hlsl`: exact sRGB, URP light attenuation, Unity fog, ambient cube, cross-cube lookup, Shader Graph Voronoi.
-- `CrossCubeSkybox`: cross cubemap sky with Unity's rotation convention and HDR gain.
+- `CrossCubeSkybox` + `Shaders/CrossCubeSky.fx`: cross cubemap sky with Unity's rotation convention and an HDR gain
+  (a pixel-shader constant; FNA's BasicEffect clamps its colour to 1).
+
+Formulas follow the URP/core-RP sources of the project's Unity version (Library/PackageCache), e.g.
+`ColorUtils.PrepareLiftGammaGain`. Under FNA's Vulkan path, implicit-gradient `tex2D` inside dynamic branches reads
+zero, so post shaders sample with `tex2Dlod`.

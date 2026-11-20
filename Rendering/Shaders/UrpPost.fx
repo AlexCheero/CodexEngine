@@ -15,9 +15,11 @@ float4 VignetteParams;                     // center xy, intensity, smoothness
 float4 VignetteColor;                      // rgb, roundness
 float ChromaAmount;
 
+// Explicit LOD everywhere: implicit-gradient samples inside dynamic branches read zero after translation.
+float3 Fetch(sampler2D s, float2 uv) { return tex2Dlod(s,float4(uv,0,0)).rgb; }
 struct ScreenVertex { float4 Position:POSITION0; float2 UV:TEXCOORD0; };
 ScreenVertex Project(float4 position:POSITION0, float2 uv:TEXCOORD0) { ScreenVertex v; v.Position=position; v.UV=uv; return v; }
-float3 SceneLinear(float2 uv) { return SrgbToLinear(tex2D(Source,uv).rgb); }
+float3 SceneLinear(float2 uv) { return SrgbToLinear(Fetch(Source,uv)); }
 
 float4 BloomPrefilter(ScreenVertex v):COLOR0 {
     float t = SourceSize.x; float2 uv = v.UV;
@@ -36,18 +38,18 @@ float4 BloomPrefilter(ScreenVertex v):COLOR0 {
 }
 float4 BloomBlurH(ScreenVertex v):COLOR0 {
     float t = SourceSize.x*2;
-    float3 c = tex2D(Source,v.UV+float2(t*-4,0)).rgb*.01621622+tex2D(Source,v.UV+float2(t*-3,0)).rgb*.05405405
-        +tex2D(Source,v.UV+float2(t*-2,0)).rgb*.12162162+tex2D(Source,v.UV+float2(t*-1,0)).rgb*.19459459
-        +tex2D(Source,v.UV).rgb*.22702703
-        +tex2D(Source,v.UV+float2(t,0)).rgb*.19459459+tex2D(Source,v.UV+float2(t*2,0)).rgb*.12162162
-        +tex2D(Source,v.UV+float2(t*3,0)).rgb*.05405405+tex2D(Source,v.UV+float2(t*4,0)).rgb*.01621622;
+    float3 c = Fetch(Source,v.UV+float2(t*-4,0))*.01621622+Fetch(Source,v.UV+float2(t*-3,0))*.05405405
+        +Fetch(Source,v.UV+float2(t*-2,0))*.12162162+Fetch(Source,v.UV+float2(t*-1,0))*.19459459
+        +Fetch(Source,v.UV)*.22702703
+        +Fetch(Source,v.UV+float2(t,0))*.19459459+Fetch(Source,v.UV+float2(t*2,0))*.12162162
+        +Fetch(Source,v.UV+float2(t*3,0))*.05405405+Fetch(Source,v.UV+float2(t*4,0))*.01621622;
     return float4(c,1);
 }
 float4 BloomBlurV(ScreenVertex v):COLOR0 {
     float t = SourceSize.y;
-    float3 c = tex2D(Source,v.UV-float2(0,t*3.23076923)).rgb*.07027027+tex2D(Source,v.UV-float2(0,t*1.38461538)).rgb*.31621622
-        +tex2D(Source,v.UV).rgb*.22702703
-        +tex2D(Source,v.UV+float2(0,t*1.38461538)).rgb*.31621622+tex2D(Source,v.UV+float2(0,t*3.23076923)).rgb*.07027027;
+    float3 c = Fetch(Source,v.UV-float2(0,t*3.23076923))*.07027027+Fetch(Source,v.UV-float2(0,t*1.38461538))*.31621622
+        +Fetch(Source,v.UV)*.22702703
+        +Fetch(Source,v.UV+float2(0,t*1.38461538))*.31621622+Fetch(Source,v.UV+float2(0,t*3.23076923))*.07027027;
     return float4(c,1);
 }
 float3 Bicubic(sampler2D s, float2 uv, float4 size) {
@@ -56,12 +58,12 @@ float3 Bicubic(sampler2D s, float2 uv, float4 size) {
     float2 w0=(1-3*f+3*f2-f3)/6, w1=(4-6*f2+3*f3)/6, w2=(1+3*f+3*f2-3*f3)/6, w3=f3/6;
     float2 g0 = w0+w1, g1 = w2+w3;
     float2 h0 = (i-.5+w1/g0)*size.xy, h1 = (i+1.5+w3/g1)*size.xy;
-    return g0.y*(g0.x*tex2D(s,float2(h0.x,h0.y)).rgb+g1.x*tex2D(s,float2(h1.x,h0.y)).rgb)
-          +g1.y*(g0.x*tex2D(s,float2(h0.x,h1.y)).rgb+g1.x*tex2D(s,float2(h1.x,h1.y)).rgb);
+    return g0.y*(g0.x*Fetch(s,float2(h0.x,h0.y))+g1.x*Fetch(s,float2(h1.x,h0.y)))
+          +g1.y*(g0.x*Fetch(s,float2(h0.x,h1.y))+g1.x*Fetch(s,float2(h1.x,h1.y)));
 }
 float4 BloomUpsample(ScreenVertex v):COLOR0 {
-    float3 high = tex2D(Source,v.UV).rgb;
-    float3 low = BloomComposite.w>0 ? Bicubic(LowSampler,v.UV,LowSize) : tex2D(LowSampler,v.UV).rgb;
+    float3 high = Fetch(Source,v.UV);
+    float3 low = BloomComposite.w>0 ? Bicubic(LowSampler,v.UV,LowSize) : Fetch(LowSampler,v.UV);
     return float4(lerp(high,low,BloomParams.w),1);
 }
 
@@ -95,7 +97,7 @@ float4 Uber(ScreenVertex v):COLOR0 {
         float2 coords = 2*uv-1; float2 delta = (-coords*dot(coords,coords)*ChromaAmount)/3;
         c = float3(SceneLinear(uv).r,SceneLinear(uv+delta).g,SceneLinear(uv+2*delta).b);
     } else c = SceneLinear(uv);
-    if (dot(BloomComposite.rgb,1)>0) c += (BloomComposite.w>0?Bicubic(GlowSampler,uv,LowSize):tex2D(GlowSampler,uv).rgb)*BloomComposite.rgb;
+    c += (BloomComposite.w>0?Bicubic(GlowSampler,uv,LowSize):Fetch(GlowSampler,uv))*BloomComposite.rgb;
     float2 d = abs(uv-VignetteParams.xy)*VignetteParams.z; d.x *= VignetteColor.w;
     c *= lerp(VignetteColor.rgb,1,pow(saturate(1-dot(d,d)),VignetteParams.w));
     return float4(LinearToSrgb(GradeColor(c*GradeParams.x)),1);

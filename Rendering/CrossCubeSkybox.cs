@@ -6,17 +6,21 @@ namespace CodexEngine.Rendering;
 /// <summary>
 /// A sky drawn from a horizontal-cross cubemap (4x3 faces: -X,+Z,+X,-Z in the middle row) in Unity's world axes.
 /// <paramref name="rotation"/> is Unity's skybox _Rotation in degrees: Unity rotates the sky geometry by it.
-/// <paramref name="gain"/> multiplies the stored texels; see Tools/UnityFidelity/sky.py for the HDR encoding.
+/// <paramref name="gain"/> multiplies the stored texels in the pixel shader, so values above 1 reach an HDR target;
+/// see Tools/UnityFidelity/sky.py for the encoding. <paramref name="effectPath"/> is CrossCubeSky.fxb.
 /// </summary>
 public sealed class CrossCubeSkybox : IDisposable
 {
     private readonly GraphicsDevice gpu;
-    private readonly BasicEffect shader;
+    private readonly Effect shader;
+    private readonly Matrix world;
     private readonly VertexPositionTexture[] vertices = new VertexPositionTexture[36];
-    public CrossCubeSkybox(GraphicsDevice gpu,Texture2D cross,float rotation,Vector3 gain)
+    public CrossCubeSkybox(GraphicsDevice gpu,string effectPath,Texture2D cross,float rotation,Vector3 gain)
     {
         this.gpu=gpu;
-        shader=new(gpu) { TextureEnabled=true,Texture=cross,DiffuseColor=gain,World=Matrix.CreateRotationY(MathHelper.ToRadians(-rotation)) };
+        shader=new(gpu,File.ReadAllBytes(effectPath));
+        shader.Parameters["Cross"].SetValue(cross);shader.Parameters["Gain"].SetValue(gain);
+        world=Matrix.CreateRotationY(MathHelper.ToRadians(-rotation));
         int n=0;
         Face(Vector3.UnitX,-Vector3.UnitZ,Vector3.UnitY,2,1);
         Face(-Vector3.UnitX,Vector3.UnitZ,Vector3.UnitY,0,1);
@@ -41,9 +45,9 @@ public sealed class CrossCubeSkybox : IDisposable
     public void Draw(Matrix view, Matrix projection)
     {
         view.Translation=Vector3.Zero;
-        shader.View=view; shader.Projection=projection;
+        shader.Parameters["WorldViewProjection"].SetValue(world*view*projection);
         gpu.BlendState=BlendState.Opaque; gpu.DepthStencilState=DepthStencilState.None;
-        gpu.RasterizerState=RasterizerState.CullNone; gpu.SamplerStates[0]=SamplerState.LinearClamp;
+        gpu.RasterizerState=RasterizerState.CullNone;
         shader.CurrentTechnique.Passes[0].Apply();
         gpu.DrawUserPrimitives(PrimitiveType.TriangleList,vertices,0,12);
     }
