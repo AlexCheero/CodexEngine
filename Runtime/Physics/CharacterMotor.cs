@@ -13,6 +13,7 @@ public sealed class CharacterMotor : IDisposable
     private readonly ObjectLayerFilter layers;
     private readonly BodyFilter bodies;
     private readonly ShapeFilter shapes;
+    private readonly GroundContactListener contacts=new();
     private readonly float halfHeight,step;
     private bool disposed;
     public Collider Collider {get;}
@@ -20,6 +21,25 @@ public sealed class CharacterMotor : IDisposable
     public Vector3 Feet=>CollisionWorld.Managed(character.GetPosition())-Vector3.up*halfHeight;
     public Vector3 WallNormal {get;private set;}
     public bool Ceiling {get;private set;}
+
+    private sealed class GroundContactListener : ManagedCharacterContactListener
+    {
+        internal bool Braking;
+
+        protected override unsafe void OnContactSolve(CharacterVirtual character,uint bodyId,uint subShapeId,
+            float3 position,float3 normal,float3 contactVelocity,PhysicsMaterial material,float3 characterVelocity,float3* result)
+        {
+            // Stationary walkable ground stops a fall, so a landing on an incline never turns into downhill movement.
+            // Without requested travel the character stays where it touched down. Otherwise only its horizontal
+            // motion follows the surface.
+            if(contactVelocity!=float3.Zero || character.IsSlopeTooSteep(normal))return;
+            if(Braking){*result=float3.Zero;return;}
+            if(characterVelocity.Y>=0)return;
+            var travel=new float3(characterVelocity.X,0,characterVelocity.Z);
+            float into=float3.Dot(travel,normal);
+            *result=into<0?travel-normal*into:travel;
+        }
+    }
 
     internal CharacterMotor(CollisionWorld world,PhysicsSystem system,ObjectLayerFilter layers,Vector3 feet,float height,
         float radius,float slopeDegrees,float step,float padding,ushort layer)
@@ -33,6 +53,7 @@ public sealed class CharacterMotor : IDisposable
         settings.SetCharacterPadding(padding);settings.SetMaxSlopeAngle(slopeDegrees*(MathF.PI/180));
         settings.SetSupportingVolume(Plane.Create(new float3(0,1,0),halfHeight-radius));
         character=CharacterVirtual.Create(settings,CollisionWorld.Native(feet+Vector3.up*halfHeight),CollisionWorld.Native(Quaternion.identity),system);
+        character.SetListener(contacts.Handle);
         var node=new CollisionNode(world,"Character"){layer=layer};
         Collider=new Collider(world,node,character.GetInnerBodyID());
         Teleport(feet);
@@ -46,6 +67,7 @@ public sealed class CharacterMotor : IDisposable
     }
     public Vector3 Move(Vector3 velocity,float dt)
     {
+        contacts.Braking=velocity.y<=0 && velocity.x*velocity.x+velocity.z*velocity.z<.0001f;
         var stair=new CharacterVirtual.ExtendedUpdateSettings {
             WalkStairsStepUp=new float3(0,step,0),WalkStairsMinStepForward=.02f,WalkStairsStepForwardTest=.15f,
             WalkStairsCosAngleForwardContact=.258819f,StickToFloorStepDown=velocity.y<=0?new float3(0,-step,0):float3.Zero
@@ -71,7 +93,7 @@ public sealed class CharacterMotor : IDisposable
     {
         if(disposed)return;
         disposed=true;world.ForgetCharacter(Collider);
-        character.Dispose();memory.Dispose();shapes.Dispose();bodies.Dispose();broad.Dispose();
+        character.Dispose();contacts.Dispose();memory.Dispose();shapes.Dispose();bodies.Dispose();broad.Dispose();
     }
 }
 

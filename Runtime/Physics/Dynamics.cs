@@ -70,6 +70,7 @@ public readonly struct RigidBody : IDisposable
     public void SetAngularVelocity(Vector3 velocity) => World.Bodies.SetAngularVelocity(Id, CollisionWorld.Native(velocity));
     public void SetLinearVelocity(Vector3 velocity) => World.Bodies.SetLinearVelocity(Id, CollisionWorld.Native(velocity));
     public Vector3 LinearVelocity => CollisionWorld.Managed(World.Bodies.GetLinearVelocity(Id));
+    public bool IsSleeping => !World.Bodies.IsActive(Id);
     public void SetFriction(float value) => World.Bodies.SetFriction(Id,value);
     public void SetGravityFactor(float factor) => World.Bodies.SetGravityFactor(Id,factor);
     public Matrix4x4 Pose => Matrix4x4.CreateFromQuaternion(Collider.transform.rotation.ToNumerics())
