@@ -39,6 +39,12 @@ float2 CrossCubeUV(float3 d, float2 rotation) {
     return (tile+clamp(.5+xy*float2(.5,-.5),.001,.999))/float2(4,3);
 }
 
+// DecodeDirectionalLightmap (CombinedDirectional lightmaps): direction is the linear _comp_dir texel.
+float3 DecodeDirectionalLightmap(float3 color, float4 direction, float3 normal) {
+    float halfLambert = dot(normal, direction.xyz-.5)+.5;
+    return color*halfLambert/max(1e-4,direction.w);
+}
+
 // Shader Graph Voronoi node (Unity_Voronoi_float): distance to the nearest animated cell centre.
 float2 ShaderGraphVoronoiVector(float2 uv, float offset) {
     uv = frac(sin(mul(uv,float2x2(15.27,47.63,99.41,89.98)))*46839.32);

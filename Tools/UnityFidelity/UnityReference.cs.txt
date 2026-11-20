@@ -220,6 +220,11 @@ public static class CodexFidelityCapture
         DumpStack(cam,data,Path.Combine(Path.GetDirectoryName(path),level+".post.json"));
         Probe(cam,Path.Combine(Path.GetDirectoryName(path),level+".probe.txt"));
         Surfaces(Path.Combine(Path.GetDirectoryName(path),level+".surfaces.json"));
+        File.WriteAllLines(Path.Combine(Path.GetDirectoryName(path),level+".particles.txt"),
+            UnityEngine.Object.FindObjectsByType<ParticleSystem>(FindObjectsSortMode.None).Select(ps=>{
+                var r=ps.GetComponent<ParticleSystemRenderer>();var m=ps.main;
+                return $"{ps.name} count={ps.particleCount} bounds={(r?r.bounds.center:Vector3.zero)}/{(r?r.bounds.size:Vector3.zero)} scaling={m.scalingMode} space={m.simulationSpace} pos={ps.transform.position} lossy={ps.transform.lossyScale} local={ps.transform.localScale} startSize={m.startSize.constantMin}-{m.startSize.constantMax} rate={ps.emission.rateOverTime.constantMax} life={m.startLifetime.constantMax}";
+            }));
         var lm=new System.Collections.Generic.List<string>();
         for(int i=0;i<LightmapSettings.lightmaps.Length;i++){
             var t=LightmapSettings.lightmaps[i].lightmapColor;if(!t)continue;

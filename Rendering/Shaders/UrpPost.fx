@@ -14,12 +14,13 @@ float4 GradeLimits;
 float4 VignetteParams;                     // center xy, intensity, smoothness
 float4 VignetteColor;                      // rgb, roundness
 float ChromaAmount;
+float SceneIsLinear;                       // 1: the scene texture holds linear radiance instead of sRGB-encoded
 
 // Explicit LOD everywhere: implicit-gradient samples inside dynamic branches read zero after translation.
 float3 Fetch(sampler2D s, float2 uv) { return tex2Dlod(s,float4(uv,0,0)).rgb; }
 struct ScreenVertex { float4 Position:POSITION0; float2 UV:TEXCOORD0; };
 ScreenVertex Project(float4 position:POSITION0, float2 uv:TEXCOORD0) { ScreenVertex v; v.Position=position; v.UV=uv; return v; }
-float3 SceneLinear(float2 uv) { return SrgbToLinear(Fetch(Source,uv)); }
+float3 SceneLinear(float2 uv) { float3 c = Fetch(Source,uv); return lerp(SrgbToLinear(c),c,SceneIsLinear); }
 
 float4 BloomPrefilter(ScreenVertex v):COLOR0 {
     float t = SourceSize.x; float2 uv = v.UV;

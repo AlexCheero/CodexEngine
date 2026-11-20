@@ -51,10 +51,13 @@ experiments. `graph_dump.py` prints a Shader Graph's nodes and edges for porting
 ## Runtime counterparts
 
 - `UrpPostProcessing` + `Shaders/UrpPost.fx`: bloom pyramid, chromatic aberration, vignette, HDR grading, Neutral/ACES tonemapping.
+  Set `LinearScene` when the scene target holds linear radiance (URP blends transparent effects in linear space).
+- `SrgbSprites` + `Shaders/SrgbSprite.fx`: a BasicEffect replacement that decodes sRGB-authored sprites into a linear target.
 - `Shaders/UrpBrdf.hlsl`: URP Lit metallic BRDF (direct specular term, environment BRDF, reflection mip).
-- `Shaders/UnityLighting.hlsl`: exact sRGB, URP light attenuation, Unity fog, ambient cube, cross-cube lookup, Shader Graph Voronoi.
+- `Shaders/UnityLighting.hlsl`: exact sRGB, URP light attenuation, Unity fog, ambient cube, cross-cube lookup, directional
+  lightmap decode, Shader Graph Voronoi.
 - `CrossCubeSkybox` + `Shaders/CrossCubeSky.fx`: cross cubemap sky with Unity's rotation convention and an HDR gain
-  (a pixel-shader constant; FNA's BasicEffect clamps its colour to 1).
+  (a pixel-shader constant; FNA's BasicEffect clamps its colour to 1). `LinearOutput` writes linear radiance.
 
 Formulas follow the URP/core-RP sources of the project's Unity version (Library/PackageCache), e.g.
 `ColorUtils.PrepareLiftGammaGain`. Under FNA's Vulkan path, implicit-gradient `tex2D` inside dynamic branches reads

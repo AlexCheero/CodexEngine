@@ -11,7 +11,7 @@
              Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="../ThirdParty/FNA/Notices/*.txt"
              Link="Content/Licenses/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="$(EffectsDir)\Surface.fxb;$(EffectsDir)\Character.fxb;$(EffectsDir)\AmbientOcclusion.fxb;$(EffectsDir)\UrpPost.fxb;$(EffectsDir)\CrossCubeSky.fxb"
+    <Content Include="$(EffectsDir)\Surface.fxb;$(EffectsDir)\Character.fxb;$(EffectsDir)\AmbientOcclusion.fxb;$(EffectsDir)\UrpPost.fxb;$(EffectsDir)\CrossCubeSky.fxb;$(EffectsDir)\SrgbSprite.fxb"
              Link="Content/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <ShaderSource Include="Shaders/*.fx;Shaders/*.hlsl" />
   </ItemGroup>

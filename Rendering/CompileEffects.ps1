@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory)][string]$SourceDirectory,
     [Parameter(Mandatory)][string]$OutputDirectory,
-    [string[]]$Effects = @('Surface', 'Character', 'AmbientOcclusion', 'UrpPost', 'CrossCubeSky')
+    [string[]]$Effects = @('Surface', 'Character', 'AmbientOcclusion', 'UrpPost', 'CrossCubeSky', 'SrgbSprite')
 )
 $ErrorActionPreference = 'Stop'
 $kits = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots' -ErrorAction SilentlyContinue

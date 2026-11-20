@@ -42,6 +42,8 @@ public sealed class CrossCubeSkybox : IDisposable
         static float Encode(float c) => c <= .0031308f ? c * 12.92f : 1.055f * MathF.Pow(c, 1 / 2.4f) - .055f;
         return linearMultiplier is { Length: >= 3 } m ? new(Encode(m[0]), Encode(m[1]), Encode(m[2])) : Vector3.One;
     }
+    /// <summary>Write linear radiance (for a linear scene target) instead of the encoded value.</summary>
+    public bool LinearOutput { set => shader.Parameters["LinearOutput"].SetValue(value ? 1f : 0f); }
     public void Draw(Matrix view, Matrix projection)
     {
         view.Translation=Vector3.Zero;

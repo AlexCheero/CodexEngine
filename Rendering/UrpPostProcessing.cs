@@ -56,6 +56,9 @@ public sealed class UrpPostProcessing : IDisposable
         [new(new(-1, 1, 0), new(0, 0)), new(new(3, 1, 0), new(2, 0)), new(new(-1, -3, 0), new(0, 2))];
     RenderTarget2D[] down = [], up = [];
 
+    /// <summary>True when the scene texture holds linear radiance; false (default) when it is sRGB-encoded.</summary>
+    public bool LinearScene { get; set; }
+
     public UrpPostProcessing(GraphicsDevice gpu, string effectPath)
     {
         this.gpu = gpu;
@@ -154,6 +157,7 @@ public sealed class UrpPostProcessing : IDisposable
         p["VignetteParams"].SetValue(new Vector4(s.Vignette[3], s.Vignette[4], s.Vignette[0] * 3, s.Vignette[1] * 5));
         p["VignetteColor"].SetValue(new Vector4(s.VignetteColor[0], s.VignetteColor[1], s.VignetteColor[2], s.Vignette[2] > 0 ? aspect : 1));
         p["ChromaAmount"].SetValue(s.Chromatic * .05f);
+        p["SceneIsLinear"].SetValue(LinearScene ? 1f : 0f);
         Pass(source, destination, "Composite");
     }
 
