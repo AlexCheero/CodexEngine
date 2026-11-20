@@ -20,11 +20,16 @@ public sealed class CharacterMotor : IDisposable
     public bool Supported=>character.GetGroundState()==CharacterBase.GroundState.OnGround;
     public Vector3 Feet=>CollisionWorld.Managed(character.GetPosition())-Vector3.up*halfHeight;
     public Vector3 WallNormal {get;private set;}
+    /// <summary>
+    /// When false, moving bodies block the character but never carry or shove it, like Unity's CharacterController,
+    /// which only moves through its own Move calls. Defaults to Jolt's behaviour: contacts pass on their velocity.
+    /// </summary>
+    public bool MovingContactsPush {get=>contacts.MovingPush;set=>contacts.MovingPush=value;}
     public bool Ceiling {get;private set;}
 
     private sealed class GroundContactListener : ManagedCharacterContactListener
     {
-        internal bool Braking;
+        internal bool Braking, MovingPush=true;
 
         protected override unsafe void OnContactSolve(CharacterVirtual character,uint bodyId,uint subShapeId,
             float3 position,float3 normal,float3 contactVelocity,PhysicsMaterial material,float3 characterVelocity,float3* result)
@@ -32,7 +37,15 @@ public sealed class CharacterMotor : IDisposable
             // Stationary walkable ground stops a fall, so a landing on an incline never turns into downhill movement.
             // Without requested travel the character stays where it touched down. Otherwise only its horizontal
             // motion follows the surface.
-            if(contactVelocity!=float3.Zero || character.IsSlopeTooSteep(normal))return;
+            if(contactVelocity!=float3.Zero)
+            {
+                if(MovingPush)return;
+                // Treat the moving body as standing still: only remove travel into it.
+                float push=float3.Dot(characterVelocity,normal);
+                *result=push<0?characterVelocity-normal*push:characterVelocity;
+                return;
+            }
+            if(character.IsSlopeTooSteep(normal))return;
             if(Braking){*result=float3.Zero;return;}
             if(characterVelocity.Y>=0)return;
             var travel=new float3(characterVelocity.X,0,characterVelocity.Z);

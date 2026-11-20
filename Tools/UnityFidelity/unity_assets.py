@@ -15,14 +15,10 @@ def guid_map(project):
     return out
 
 def open_rgba(path):
-    """Opens an image as RGBA. Pillow drops an unlabelled fourth TIFF sample (ExtraSamples=0), which Unity imports as alpha."""
+    """Opens an image as RGBA. Pillow drops an unlabelled fourth TIFF sample (ExtraSamples=0), which Unity imports as alpha;
+    relabelling it as unassociated alpha lets Pillow's own decoders (any compression) keep it."""
     path = pathlib.Path(path); im = Image.open(path)
     tags = getattr(im, "tag_v2", None)
-    if tags and tags.get(277) == 4 and im.mode == "RGB" and tags.get(259) == 8 and tags.get(284, 1) == 1:
-        w, h = tags[256], tags[257]
-        raw = path.read_bytes(); data = bytearray()
-        for offset, count in zip(tags[273], tags[279]): data += zlib.decompress(raw[offset:offset + count])
-        a = np.frombuffer(bytes(data), np.uint8)[:w * h * 4].reshape(h, w, 4).copy()
-        if tags.get(317, 1) == 2: a = np.cumsum(a, axis=1, dtype=np.uint8)
-        return Image.fromarray(a, "RGBA")
+    if tags and tags.get(277) == 4 and im.mode == "RGB":
+        im.tag_v2[338] = (2,); im._setup()
     return im.convert("RGBA")

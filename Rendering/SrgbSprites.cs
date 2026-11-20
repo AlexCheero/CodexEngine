@@ -10,14 +10,17 @@ namespace CodexEngine.Rendering;
 public sealed class SrgbSprites : IDisposable
 {
     readonly Effect effect;
-    readonly EffectParameter transform, sprite;
+    readonly EffectParameter transform, sprite, gain;
     public SrgbSprites(GraphicsDevice gpu, string effectPath)
     {
         effect = new Effect(gpu, File.ReadAllBytes(effectPath));
-        transform = effect.Parameters["WorldViewProjection"]; sprite = effect.Parameters["Sprite"];
+        transform = effect.Parameters["WorldViewProjection"]; sprite = effect.Parameters["Sprite"]; gain = effect.Parameters["Gain"];
+        gain.SetValue(1f);
     }
     public Matrix Projection { set => transform.SetValue(value); }
     public Texture2D Texture { set => sprite.SetValue(value); }
+    /// <summary>Linear multiplier for HDR sprites stored as sRGB(linear/scale); 1 for ordinary sprites.</summary>
+    public float Gain { set => gain.SetValue(value); }
     public EffectTechnique CurrentTechnique => effect.CurrentTechnique;
     public void Dispose() => effect.Dispose();
 }
