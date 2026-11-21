@@ -4,7 +4,7 @@ CodexEngine is the reusable C# runtime and Godot authoring layer used by Griefbo
 
 | Directory | Responsibility |
 | --- | --- |
-| `CodexECS` | Entity storage, filters, systems and the pipeline from the Unity project's ECS |
+| `CodexECS` | Entity storage, filters, systems and the pipeline from the Unity project's ECS, plus jobs, command buffers and pipeline assets |
 | `CodexNetworking` | Transport, serialization, snapshots and ECS synchronization |
 | `Runtime` | Pure entity presets, math, Jolt simulation primitives and the shared scene and mesh formats |
 | `Rendering` | FNA static and skinned mesh rendering, GPU assets, shader sources and FXC compilation |
@@ -39,8 +39,20 @@ On Windows x64, build the engine with `dotnet build CodexEngine.sln -c Release` 
 `IndirectLightBake.Write` bakes visible skylight and one diffuse bounce from textured static scene geometry. Supply the same sun direction and colours as the player, and the horizontal bounds where moving objects need probes. The resulting `.brgi` contains a world-space colour mesh and six directional irradiance values per probe. Load it with `BakedSceneLight.Read`. Use `StaticMeshRenderer.CreateBatch(light)` to draw the refined surface with vertex irradiance in `COLOR1`, and keep the original scene mesh for shadow casters. For moving objects, create `IrradianceProbes`, call `Bind(material)` and sample `ProbeIrradiance(worldPosition, unitNormal)` from `Rendering/Shaders/IrradianceProbes.hlsl`. It reserves pixel sampler 2 unless the effect defines `PROBE_SAMPLER` before the include. `IrradianceProbes.Read` loads a Unity scene's baked light probes from the `.lightprobes` file that `Tools/UnityFidelity` writes and resamples them onto a grid.
 
 
+## Pipelines and jobs
+
+A pipeline asset is a JSON file with one ordered list of systems per category (`Init`, `Update`, `LateUpdate`, `FixedUpdate`, `LateFixedUpdate`, `OnEnable`, `OnDisable`, `Reactive`), the same lists the Unity integration serializes. Each entry holds the system's full type name and its `Active` and `NonPausable` flags. `PipelineAsset.Load(path).Build(world)` creates every system through its constructor taking one `EcsWorld`, and `PipelineHost` ticks the categories. Systems reach shared objects with `world.Service<T>()`. Mark a system with `[System(ESystemCategory.FixedUpdate)]` to offer it in the editor.
+
+`JobScheduler` runs single and batched jobs in dependency order. Give one to `EcsWorld.Jobs`; `RangeWorkers` exposes the scheduler it dispatches on. `filter.ScheduleParallel(body)` hands a body batches of pages to iterate. Jobs cannot change structure: they record into `world.CreateCommandBuffer()`, which plays back at the next sync point in an order that does not depend on thread assignment.
+
+A system that declares nothing is a sync point: the pipeline finishes every job on component data and plays back every command buffer before it ticks. A system that calls `Declare().Read<T>().Write<T>()` in its constructor ticks beside jobs on other data. It schedules with its `Dependency`, stores the handle of what it scheduled back into it, and calls `CompleteDependency()` before touching declared components itself. Every group ends at a sync point. A job that touches no component data can be scheduled on the scheduler directly and completed by its owner.
+
+`PhysicsStepSystem` and `BodySampleSystem` are the collision world as pipeline systems. A game adds a `PhysicsStepRequest` to an entity, lists both systems, and reads each entity's `BodySample` afterwards. They need the world's `CollisionWorld` service.
+
 ## Codex Editor
 
 Run `Edit.cmd` on Windows to open the standalone Godot .NET authoring project. The launcher installs the pinned upstream Godot .NET distribution and builds the editor scripts. The Codex editor customization lives under `Godot/addons/codex_engine` and includes the Entity Presets dock, the component inspector, and the content baking tools.
 
 Projects that embed the workbench enable `res://addons/codex_engine/plugin.cfg` in their Godot project and store their entity presets in `res://Entities`. A project can set `codex/editor/entity_palette` to its own C# script derived from `EntityWorkbenchPalette` to expose game-specific components.
+
+The Pipeline dock edits pipeline assets. Pick a `*.pipeline.json`, then add, remove, reorder (buttons or drag), activate and deactivate systems per category, as in the Unity pipeline inspector. It looks for the files in the folder named by the `codex/editor/pipeline_directory` project setting, then `res://Pipelines`, then `Content/Pipelines` of the game the standalone editor sits in. The systems on offer come from `systems.json` in that folder, which the game writes from `SystemCatalog.ExportJson()`.

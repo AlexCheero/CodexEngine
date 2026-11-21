@@ -4,9 +4,11 @@ extends EditorPlugin
 const Entity = preload("res://addons/codex_engine/EntityAuthoring.cs")
 const DEFAULT_PALETTE = "res://addons/codex_engine/EntityWorkbenchPalette.cs"
 const Inspector = preload("entity_inspector.gd")
+const PipelineDock = preload("pipeline_dock.gd")
 
 var palette
 var dock := EditorDock.new()
+var pipeline_dock := EditorDock.new()
 var presets := ItemList.new()
 var filter := LineEdit.new()
 var dialog := ConfirmationDialog.new()
@@ -43,6 +45,14 @@ func _enter_tree():
     place = action_button("Place in Scene", "Instance", place_selected)
     column.add_child(place)
     add_dock(dock)
+    pipeline_dock.title = "Pipeline"
+    pipeline_dock.layout_key = "CodexPipeline"
+    pipeline_dock.default_slot = EditorDock.DOCK_SLOT_RIGHT_BL
+    pipeline_dock.icon_name = &"Script"
+    var pipeline := PipelineDock.new()
+    pipeline.workbench = self
+    pipeline_dock.add_child(pipeline)
+    add_dock(pipeline_dock)
     toolbar = action_button("Entity Presets", "PackedScene", dock.make_visible)
     toolbar.flat = true
     add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, toolbar)
@@ -75,6 +85,8 @@ func _exit_tree():
     remove_inspector_plugin(inspector)
     remove_control_from_container(CONTAINER_SPATIAL_EDITOR_MENU, toolbar)
     remove_dock(dock)
+    remove_dock(pipeline_dock)
+    pipeline_dock.queue_free()
     toolbar.queue_free()
     dialog.queue_free()
     dock.queue_free()
