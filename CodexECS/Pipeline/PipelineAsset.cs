@@ -40,6 +40,25 @@ namespace CodexECS
         public PipelineAsset Add<TSystem>(ESystemCategory category, bool active = true, bool nonPausable = false)
             where TSystem : EcsSystem => Add(category, typeof(TSystem), active, nonPausable);
 
+        /// <summary>
+        /// A copy that keeps, in order, the entries whose system type passes the test: a subsystem can tick its
+        /// own part of an authored pipeline. Names resolve against SystemCatalog.
+        /// </summary>
+        public PipelineAsset Where(Func<Type, bool> keep)
+        {
+            var subset = new PipelineAsset();
+            foreach (var category in SystemCatalog.Categories)
+                foreach (var entry in _systems[category])
+                {
+                    if (!SystemCatalog.Types.TryGetValue(entry.Name ?? "", out var type))
+                        throw new InvalidOperationException(
+                            $"Pipeline category {category} names '{entry.Name}', which is not an EcsSystem in any loaded assembly.");
+                    if (keep(type))
+                        subset._systems[category].Add(entry);
+                }
+            return subset;
+        }
+
         public static PipelineAsset Parse(string json)
         {
             var asset = new PipelineAsset();
