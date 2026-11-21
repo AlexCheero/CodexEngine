@@ -150,7 +150,9 @@ public sealed class VisibilityGrid
                     cell.Levels[cell.SeenCount] = level;
                     cell.Seen[cell.SeenCount++] = index;
                 }
-                if (inCast && (item.Traits & VisibilityTraits.Caster) != 0 && (unbounded || casts(item.Bounds)))
+                // Something drawn only near the eye casts only there too.
+                if (inCast && (item.Traits & VisibilityTraits.Caster) != 0 && (unbounded || casts(item.Bounds))
+                    && (unbounded || item.MaxDistance <= 0 || Vector3.DistanceSquared(item.Bounds.Center, eye) <= item.MaxDistance * item.MaxDistance))
                 {
                     cell.CasterLevels[cell.CasterCount] = unbounded || scale <= 0 ? (byte)0 : Level(in item, Pixels(in item, eye, scale));
                     cell.Casters[cell.CasterCount++] = index;

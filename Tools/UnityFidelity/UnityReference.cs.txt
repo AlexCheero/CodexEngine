@@ -153,7 +153,8 @@ public static class CodexFidelityCapture
         return "{\"material\":\""+m.name+"\",\"baseMap\":\""+(baseMap?AssetDatabase.GetAssetPath(baseMap):"")+"\",\"cull\":"+Fl(F2("_Cull",2))+",\"shader\":\""+m.shader.name+"\",\"lit\":"+(lit?1:0)+",\"smoothness\":"+Fl(smooth)+",\"metallic\":"+Fl(metal)+",\"specular\":"+(specular?"["+Fl(sc.linear.r)+","+Fl(sc.linear.g)+","+Fl(sc.linear.b)+"]":"null")
             +",\"env\":"+(F2("_EnvironmentReflections",1)>0&&!m.IsKeywordEnabled("_ENVIRONMENTREFLECTIONS_OFF")?1:0)+",\"highlights\":"+(F2("_SpecularHighlights",1)>0&&!m.IsKeywordEnabled("_SPECULARHIGHLIGHTS_OFF")?1:0)
             // Distance-faded foliage (Terrain sample Shader Graphs): fade start/end and the colour reached at the end.
-            +(m.HasProperty("Distance_Fade_Start")?",\"fade\":["+Fl(F2("Distance_Fade_Start",0))+","+Fl(F2("Distance_Fade_End",0))+"],\"fadeColor\":["+Fl(m.GetColor("Fade_Color").linear.r)+","+Fl(m.GetColor("Fade_Color").linear.g)+","+Fl(m.GetColor("Fade_Color").linear.b)+"]":"")+"}";
+            +(m.HasProperty("Distance_Fade_Start")?",\"fade\":["+Fl(F2("Distance_Fade_Start",0))+","+Fl(F2("Distance_Fade_End",0))+"],\"fadeColor\":["+Fl(m.GetColor("Fade_Color").linear.r)+","+Fl(m.GetColor("Fade_Color").linear.g)+","+Fl(m.GetColor("Fade_Color").linear.b)+"]":"")
+            +(m.HasProperty("AO_Scale")?",\"aoScale\":"+Fl(F2("AO_Scale",1)):"")+"}";
     }
     static void Surfaces(string path){
         var seen=new System.Collections.Generic.HashSet<string>();var rows=new System.Collections.Generic.List<string>();
