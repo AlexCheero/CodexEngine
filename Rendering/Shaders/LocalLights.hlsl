@@ -39,7 +39,8 @@ struct LocalLight {
 
 // The light table holds four texels a light, sixteen lights a row: position and 1/range², colour and kind, cone
 // axis and the cosine of its outer angle, then the cone's sharpness and the shadow slot. The kind is the shadow
-// mask channel plus one, plus 8 for a cone and 16 for a shadow map: a plain point light is read from two texels.
+// mask channel plus one, plus 8 for a cone and 16 for a shadow map, and above those the size of the source in
+// steps of 1/64 times 32: a plain point light is read from two texels.
 LocalLight ReadLocalLight(float index, float3 position) {
     LocalLight light;
     light.toward = 0; light.radiance = 0; light.distance = 0; light.shadowChannel = -1; light.shadowSlot = -1;
@@ -48,9 +49,17 @@ LocalLight ReadLocalLight(float index, float3 position) {
     float4 place = tex2Dlod(ClusterSampler,float4(uv,0,0));
     float3 d = place.xyz-position;
     float d2 = max(dot(d,d),1e-4);
-    light.reach = RangeAttenuation(d2,place.w);
-    if (light.reach > 0) {
+    // RangeAttenuation, taken apart: the window that ends the light at its range tells whether it reaches here at
+    // all, and the inverse square is held at the source's own size, which the second texel brings.
+    float window = d2*place.w;
+    float ease = saturate(1-window*window);
+    light.reach = ease;
+    if (ease > 0) {
         float4 color = tex2Dlod(ClusterSampler,float4(uv.x+ClusterTexel.x,uv.y,0,0));
+        float size = floor(color.w/32);
+        color.w -= size*32;
+        size /= 64;
+        light.reach = ease*ease/max(d2,max(size*size,1e-4));
         light.distance = sqrt(d2);
         light.toward = d/light.distance;
         light.range = rsqrt(place.w);

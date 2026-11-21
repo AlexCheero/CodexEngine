@@ -3,9 +3,7 @@ using System.Runtime.InteropServices;
 using CodexECS;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
-using LightFlash = CodexEngine.Runtime.LightFlash;
-using LightTraits = CodexEngine.Runtime.LightTraits;
-using LocalLight = CodexEngine.Runtime.LocalLight;
+using CodexEngine.Lighting;
 
 namespace CodexEngine.Rendering;
 
@@ -35,7 +33,7 @@ public sealed class ClusteredLights : IDisposable
     struct Gathered
     {
         public Vector3 Position, Color, Direction;
-        public float Range, OuterCos, ConeScale, ShadowChannel;
+        public float Range, OuterCos, ConeScale, ShadowChannel, Radius;
         public bool Baked, CastsShadows;
         public long Key;
     }
@@ -140,6 +138,7 @@ public sealed class ClusteredLights : IDisposable
         g.Position = new(light.Position.X, light.Position.Y, light.Position.Z);
         g.Color = color;
         g.Range = light.Range;
+        g.Radius = light.Radius;
         g.Baked = (light.Traits & LightTraits.Baked) != 0;
         g.CastsShadows = (light.Traits & LightTraits.CastsShadows) != 0;
         g.ShadowChannel = light.ShadowChannel;
@@ -217,8 +216,10 @@ public sealed class ClusteredLights : IDisposable
             int slot = i * 4;
             table[slot] = new Vector4(g.Position, s.InverseRangeSquared);
             // What the light needs beyond its place and colour: 1 to 4 for a shadow mask channel, 8 for a cone.
-            // A real-time shadow adds 16 (SetShadowSlot). Below 8 a pixel reads two texels and is done.
-            table[slot + 1] = new Vector4(g.Color, Math.Clamp(g.ShadowChannel, -1, 3) + 1 + (g.OuterCos > -1 ? 8 : 0));
+            // A real-time shadow adds 16 (SetShadowSlot). Below 8 a pixel reads two texels and is done. The size of
+            // the source rides above those, in steps of 1/64, so it needs no texel of its own.
+            table[slot + 1] = new Vector4(g.Color, Math.Clamp(g.ShadowChannel, -1, 3) + 1 + (g.OuterCos > -1 ? 8 : 0)
+                + 32 * MathF.Round(Math.Clamp(g.Radius, 0, 16) * 64));
             table[slot + 2] = new Vector4(g.Direction, g.OuterCos);
             table[slot + 3] = new Vector4(g.ConeScale, shadowSlots[i] = -1, 0, 0);
         }

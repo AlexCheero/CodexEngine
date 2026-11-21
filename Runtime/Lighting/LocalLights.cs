@@ -1,7 +1,9 @@
 using CodexECS;
 using N = System.Numerics;
 
-namespace CodexEngine.Runtime;
+// A namespace of its own: CodexEngine.Runtime has a Vector3, and a renderer that imports the lights also imports its
+// framework's vectors.
+namespace CodexEngine.Lighting;
 
 [Flags]
 public enum LightTraits : byte
@@ -28,6 +30,12 @@ public struct LocalLight : IComponent
     public N.Vector3 Position;
     /// <summary>Where the light ends. It falls off by the inverse square and eases to zero here.</summary>
     public float Range;
+    /// <summary>
+    /// The size of the source. Nothing nearer than this is lit more brightly than a surface at this distance, so
+    /// what holds the light or stands inside it (a weapon and its muzzle flash, smoke in an explosion) does not
+    /// burn out. Zero for a point. Kept to steps of 1/64 up to 16 units.
+    /// </summary>
+    public float Radius;
     /// <summary>Linear radiance at one unit of distance.</summary>
     public N.Vector3 Color;
     /// <summary>Unit axis of a spot's cone, pointing away from the light.</summary>
@@ -57,15 +65,18 @@ public struct LocalLight : IComponent
 public struct LightFlash : IComponent
 {
     public float Start, Duration;
-    /// <summary>Dims by the square of the time left instead of staying whole until the end.</summary>
-    public bool Fades;
+    /// <summary>
+    /// How the light dims: it keeps the share of time left raised to this power. 0 stays whole until the end,
+    /// 1 fades evenly, 2 drops fast and lingers.
+    /// </summary>
+    public float Fade;
 
     /// <summary>The share of the light's colour left at <paramref name="now"/>; zero before the start and after the end.</summary>
     public readonly float Strength(float now)
     {
         float t = (now - Start) / Duration;
         if (!(t >= 0 && t < 1)) return 0;
-        return Fades ? (1 - t) * (1 - t) : 1;
+        return Fade <= 0 ? 1 : Fade == 1 ? 1 - t : Fade == 2 ? (1 - t) * (1 - t) : MathF.Pow(1 - t, Fade);
     }
 }
 
@@ -126,11 +137,18 @@ public static class LightSpawning
         return id;
     }
 
-    /// <summary>A light that lasts <paramref name="duration"/> seconds from <paramref name="now"/>.</summary>
-    public static int SpawnFlash(this EcsWorld world, in LocalLight light, float now, float duration, bool fades)
+    /// <summary>
+    /// A light that lasts <paramref name="duration"/> seconds from <paramref name="now"/>, dimming by
+    /// <see cref="LightFlash.Fade"/>.
+    /// </summary>
+    public static int SpawnFlash(this EcsWorld world, in LocalLight light, float now, float duration, float fade)
     {
         int id = world.Spawn(light);
-        world.Add(id, new LightFlash { Start = now, Duration = duration, Fades = fades });
+        world.Add(id, new LightFlash { Start = now, Duration = duration, Fade = fade });
         return id;
     }
+
+    /// <summary>The same, whole until the end or fading by the square of the time left.</summary>
+    public static int SpawnFlash(this EcsWorld world, in LocalLight light, float now, float duration, bool fades) =>
+        world.SpawnFlash(in light, now, duration, fades ? 2f : 0f);
 }
