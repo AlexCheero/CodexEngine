@@ -98,11 +98,14 @@ namespace CodexECS
         /// Schedules body over the filter in batches of pagesPerBatch pages (64 slots each) on the world's
         /// scheduler. The body may read and write components of the entities it is given. It must not create or
         /// delete entities or add or remove components: record those in an EntityCommandBuffer.
+        /// The next sync point finishes the job. A system orders it against other jobs through its Dependency.
         /// </summary>
         public JobHandle ScheduleParallel(Action<Batch> body, int pagesPerBatch = 8, JobHandle dependsOn = default)
         {
             var jobs = World.Jobs ?? throw new InvalidOperationException("The world has no job scheduler.");
-            return jobs.ScheduleEntities(this, body, pagesPerBatch, dependsOn);
+            var handle = jobs.ScheduleEntities(this, body, pagesPerBatch, dependsOn);
+            World.Dependencies.Track(handle);
+            return handle;
         }
 
         /// <summary>Number of batches ScheduleParallel makes for this page size at the world's current size.</summary>

@@ -232,8 +232,8 @@ namespace CodexECS
         /// <summary>
         /// Ticks runnable systems in registration order. A paused pipeline only ticks
         /// non-pausable systems unless force is true.
-        /// A system that declares no component access is a sync point: every job is finished and every
-        /// command buffer played back before it is considered. A declaring system receives the unfinished
+        /// A system that declares no component access is a sync point: every job on component data is finished
+        /// and every command buffer played back before it is considered. A declaring system receives the unfinished
         /// jobs that conflict with it as its Dependency and may leave jobs running. The group ends with a
         /// sync point, so nothing runs across groups.
         /// </summary>

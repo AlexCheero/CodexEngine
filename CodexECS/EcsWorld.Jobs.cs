@@ -28,17 +28,16 @@ namespace CodexECS
             return _commandBuffers[_commandBuffersInUse++];
         }
 
-        /// <summary>True when a job is unfinished or a command buffer waits for playback.</summary>
-        public bool NeedsSync => _commandBuffersInUse != 0 || Jobs != null && Jobs.Busy;
+        /// <summary>True when a job recorded in Dependencies may be unfinished or a command buffer waits for playback.</summary>
+        public bool NeedsSync => _commandBuffersInUse != 0 || _dependencies != null && _dependencies.Any;
 
         /// <summary>
-        /// A sync point: finishes every job, then applies the command buffers in the order they were taken.
-        /// Structural changes made directly on the owning thread are safe after it.
+        /// A sync point: finishes every job recorded in Dependencies, then applies the command buffers in the
+        /// order they were taken. Structural changes made directly on the owning thread are safe after it.
         /// </summary>
         public void Sync()
         {
-            if (Jobs != null)
-                Dependencies.CompleteAll();
+            _dependencies?.CompleteAll();
             if (_commandBuffersInUse == 0)
                 return;
             int count = _commandBuffersInUse;

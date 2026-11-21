@@ -53,6 +53,8 @@ namespace CodexECS
         private List<JobHandle>[] _readers = Array.Empty<List<JobHandle>>();
         private readonly List<int> _touched = new List<int>(16);
         private readonly List<JobHandle> _scratch = new List<JobHandle>(8);
+        // Jobs that walk the world's storage: a sync point finishes them whether or not their access was recorded.
+        private readonly List<JobHandle> _walking = new List<JobHandle>(8);
 
         internal JobDependencies(EcsWorld world) => _world = world;
 
@@ -123,14 +125,41 @@ namespace CodexECS
         /// <summary>Finishes every job this access must wait for.</summary>
         public void Complete(ComponentAccess access) => Get(access).Complete();
 
-        /// <summary>Finishes every job of the world's scheduler and forgets them.</summary>
+        /// <summary>True while a recorded job may be unfinished.</summary>
+        public bool Any => _touched.Count != 0 || _walking.Count != 0;
+
+        // A filter job reads membership words and payload arrays, so no structural change may happen under it.
+        internal void Track(JobHandle handle)
+        {
+            if (handle.IsCompleted)
+                return;
+            for (int i = _walking.Count - 1; i >= 0; i--)
+                if (_walking[i].IsCompleted)
+                    _walking.RemoveAt(i);
+            _walking.Add(handle);
+        }
+
+        /// <summary>
+        /// Finishes every recorded job and forgets them. A job that was scheduled without being recorded here
+        /// touches no component data, so it keeps running: whoever scheduled it completes it.
+        /// </summary>
         public void CompleteAll()
         {
-            if (_world.Jobs == null)
+            if (_touched.Count == 0 && _walking.Count == 0)
                 return;
             try
             {
-                _world.Jobs.CompleteAll();
+                foreach (var walking in _walking)
+                    walking.Complete();
+                foreach (int type in _touched)
+                {
+                    _writers[type].Complete();
+                    var readers = _readers[type];
+                    if (readers == null)
+                        continue;
+                    foreach (var reader in readers)
+                        reader.Complete();
+                }
             }
             finally
             {
@@ -140,6 +169,7 @@ namespace CodexECS
                     _readers[type]?.Clear();
                 }
                 _touched.Clear();
+                _walking.Clear();
             }
         }
     }
