@@ -22,6 +22,8 @@ namespace CodexECS
             /// <summary>Stopwatch ticks spent in Tick and how often it ran, while the pipeline's Profile is on.</summary>
             public long ProfiledTicks { get; internal set; }
             public int ProfiledRuns { get; internal set; }
+            /// <summary>Stopwatch ticks the sync point before this system spent finishing jobs and playing back commands.</summary>
+            public long ProfiledSyncTicks { get; internal set; }
             public IReadOnlyList<EcsFilter> Filters => _filters;
 
             internal Registration(EcsSystem system, bool active, bool nonPausable, EcsFilter[] filters)
@@ -111,6 +113,8 @@ namespace CodexECS
         public bool IsPaused { get; private set; }
         /// <summary>Accumulates each system's tick time in its registration.</summary>
         public bool Profile { get; set; }
+        /// <summary>Stopwatch ticks spent in the sync points that end groups, while Profile is on.</summary>
+        public long ProfiledGroupSyncTicks { get; private set; }
         public IReadOnlyList<Registration> Registrations => _registrations;
 #if PERFORMANCE_BENCHMARK
         public Action<TGroup, EcsSystem, long> SystemTicked;
@@ -254,7 +258,12 @@ namespace CodexECS
                     var access = system.Access;
                     // Pending commands can change which filters match, so an exclusive system is gated after them.
                     if (access == null && world.NeedsSync)
+                    {
+                        var waited = Profile ? System.Diagnostics.Stopwatch.GetTimestamp() : 0L;
                         world.Sync();
+                        if (Profile)
+                            registration.ProfiledSyncTicks += System.Diagnostics.Stopwatch.GetTimestamp() - waited;
+                    }
                     if (!state.Graph.ShouldRun(i))
                         continue;
                     if (access != null && world.Jobs != null)
@@ -296,16 +305,23 @@ namespace CodexECS
             finally
             {
                 if (world.NeedsSync)
+                {
+                    var waited = Profile ? System.Diagnostics.Stopwatch.GetTimestamp() : 0L;
                     world.Sync();
+                    if (Profile)
+                        ProfiledGroupSyncTicks += System.Diagnostics.Stopwatch.GetTimestamp() - waited;
+                }
             }
         }
 
         public void ResetProfile()
         {
+            ProfiledGroupSyncTicks = 0;
             for (int i = 0; i < _registrations.Count; i++)
             {
                 _registrations[i].ProfiledTicks = 0;
                 _registrations[i].ProfiledRuns = 0;
+                _registrations[i].ProfiledSyncTicks = 0;
             }
         }
 

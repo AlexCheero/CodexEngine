@@ -223,7 +223,48 @@ public partial class CollisionWorld
         constraint.Joint.Dispose();
     }
 
+    private Action<int,int> syncRange;
+
+    /// <summary>Threads for reading bodies back after the solver. Without them the calling thread does it.</summary>
+    public CodexECS.JobScheduler Jobs { get; set; }
+
+    /// <summary>How many times the solver has advanced: readers of body state compare it to skip repeated work.</summary>
+    public long Steps { get; private set; }
+
+    /// <summary>Advances the solver and reads every dynamic body's pose back into its transform.</summary>
     public void Step(float dt,int subdivisions=1)
+    {
+        Advance(dt,subdivisions);
+        SyncPoses();
+    }
+
+    /// <summary>Reads every dynamic body's pose back into its transform, on the job threads when there are any.</summary>
+    public void SyncPoses()
+    {
+        syncRange??=SyncRange;
+        if (Jobs != null) Jobs.Run(dynamicColliders.Count,256,syncRange);
+        else SyncRange(0,dynamicColliders.Count);
+    }
+
+    /// <summary>The same read-back as a job. Transforms of dynamic bodies are stale until it completes.</summary>
+    public CodexECS.JobHandle SchedulePoseSync(CodexECS.JobHandle dependsOn=default)
+    {
+        syncRange??=SyncRange;
+        return Jobs.ScheduleRange(dynamicColliders.Count,256,syncRange,dependsOn);
+    }
+
+    private void SyncRange(int start,int end)
+    {
+        for (int i = start; i < end; i++)
+        {
+            var collider = dynamicColliders[i];
+            Bodies.GetPositionAndRotation(collider.Id, out var position, out var rotation);
+            collider.transform.SetSimulatedPose(Managed(position), new Quaternion(rotation.X, rotation.Y, rotation.Z, rotation.W));
+        }
+    }
+
+    /// <summary>Advances the solver only. Body transforms keep their old pose until the poses are synchronized.</summary>
+    public void Advance(float dt,int subdivisions=1)
     {
         if (!solverInitialized)
         {
@@ -234,11 +275,7 @@ public partial class CollisionWorld
         ArgumentOutOfRangeException.ThrowIfLessThan(subdivisions,1);
         float interval=dt/subdivisions;
         for(int i=0;i<subdivisions;i++)system.Update(interval,1,temporaryMemory,solverJobs);
-        foreach (var collider in dynamicColliders)
-        {
-            Bodies.GetPositionAndRotation(collider.Id, out var position, out var rotation);
-            collider.transform.SetSimulatedPose(Managed(position), new Quaternion(rotation.X, rotation.Y, rotation.Z, rotation.W));
-        }
+        Steps++;
     }
     private void ReleaseDynamics()
     {
