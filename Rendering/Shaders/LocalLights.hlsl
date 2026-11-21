@@ -82,6 +82,10 @@ LocalLight ReadLocalLight(float index, float3 position) {
 // A cluster lists its lights four to a texel, numbered from one, and ends the list with a zero. The lights outside
 // the baked lighting come first and the baked ones after them as negative numbers, so a surface that has baked
 // light already stops at the first negative one.
+// The loops leave nothing by `break`. The effect compiler turned those exits, in some effects and not in others,
+// into a comparison of a constant with itself that never left: every lit pixel then walked all sixteen slots and
+// read a light for each. A page is skipped by a branch on whether the page before it was full, its four slots by a
+// branch on the first of them, and an empty slot by a branch on its own number: none of which the compiler can fold.
 #define LL_NUMBER(id, unbakedOnly) max(id,-(id)*(1-(unbakedOnly)))
 #define LOCAL_LIGHTS_BEGIN(position, unbakedOnly) \
     [branch] if (PER_PIXEL(ClusterLights > 0, (position).x)) { \
@@ -90,16 +94,19 @@ LocalLight ReadLocalLight(float index, float3 position) {
         float2 ll_tile = min(floor(saturate(ll_clip.xy/ll_depth*.5+.5)*ClusterGrid.xy),ClusterGrid.xy-1); \
         float ll_slice = clamp(floor(log2(ll_depth*ClusterTexel.w)*ClusterGrid.w),0,ClusterGrid.z-1); \
         float2 ll_uv = float2((ll_tile.x*4+.5)*ClusterTexel.x,(ll_slice*ClusterGrid.y+ll_tile.y+.5)*ClusterTexel.y); \
-        [loop] for (int ll_page = 0; ll_page < 4; ll_page++) { \
-            float4 ll_ids = tex2Dlod(ClusterSampler,float4(ll_uv,0,0)); \
-            if (LL_NUMBER(ll_ids.x,unbakedOnly) < .5) break; \
-            ll_uv.x += ClusterTexel.x; \
-            [loop] for (int ll_slot = 0; ll_slot < 4; ll_slot++) { \
-                float ll_id = LL_NUMBER(ll_ids[ll_slot],unbakedOnly); \
-                if (ll_id < .5) break; \
-                LocalLight light = ReadLocalLight(ll_id-1,position); \
-                if (light.reach > 0) {
-#define LOCAL_LIGHTS_END }}}}
+        float ll_more = 1; \
+        [unroll] for (int ll_page = 0; ll_page < 4; ll_page++) { \
+            [branch] if (ll_more > .5) { \
+                float4 ll_ids = tex2Dlod(ClusterSampler,float4(ll_uv,0,0)); \
+                ll_uv.x += ClusterTexel.x; \
+                ll_more = LL_NUMBER(ll_ids.w,unbakedOnly); \
+                [branch] if (LL_NUMBER(ll_ids.x,unbakedOnly) > .5) \
+                [loop] for (int ll_slot = 0; ll_slot < 4; ll_slot++) { \
+                    float ll_id = LL_NUMBER(ll_ids[ll_slot],unbakedOnly); \
+                    [branch] if (ll_id > .5) { \
+                        LocalLight light = ReadLocalLight(ll_id-1,position); \
+                        if (light.reach > 0) {
+#define LOCAL_LIGHTS_END }}}}}}
 
 // The diffuse light the local lights put on a surface at `position` facing `normal`, unshadowed.
 float3 LocalDiffuse(float3 position, float3 normal) {
