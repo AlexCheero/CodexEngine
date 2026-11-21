@@ -27,6 +27,7 @@ var status := Label.new()
 var category := OptionButton.new()
 var any_category := CheckBox.new()
 var add_search := LineEdit.new()
+var offer := ScrollContainer.new()
 var available := VBoxContainer.new()
 var added_search := LineEdit.new()
 var lists := VBoxContainer.new()
@@ -70,8 +71,6 @@ func _ready():
     add_search.clear_button_enabled = true
     add_search.text_changed.connect(refresh_available.unbind(1))
     add_child(add_search)
-    var offer := ScrollContainer.new()
-    offer.custom_minimum_size.y = 120 * EditorInterface.get_editor_scale()
     offer.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
     available.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     offer.add_child(available)
@@ -231,7 +230,7 @@ func refresh_available():
         if not query.is_empty() and full.findn(query) == -1:
             continue
         var row := HBoxContainer.new()
-        var add := workbench.action_button("", "Add", add_system.bind(target, full))
+        var add: Button = workbench.action_button("", "Add", add_system.bind(target, full))
         add.tooltip_text = "Add to " + target
         row.add_child(add)
         var label := Label.new()
@@ -242,6 +241,11 @@ func refresh_available():
         label.clip_text = true
         row.add_child(label)
         available.add_child(row)
+    fit_offer.call_deferred()
+
+# The offer takes the height its rows need, up to a few of them, and the pipeline keeps the rest of the dock.
+func fit_offer():
+    offer.custom_minimum_size.y = minf(available.get_combined_minimum_size().y, 140 * EditorInterface.get_editor_scale())
 
 func add_system(target: String, full: String):
     if has_system(target, full):
@@ -303,8 +307,8 @@ func system_row(target: String, index: int, entry: Dictionary, reorder: bool) ->
     row.category = target
     row.index = index
     row.reorder = reorder
-    var up := workbench.action_button("", "MoveUp", move_system.bind(target, index, index - 1))
-    var down := workbench.action_button("", "MoveDown", move_system.bind(target, index, index + 1))
+    var up: Button = workbench.action_button("", "MoveUp", move_system.bind(target, index, index - 1))
+    var down: Button = workbench.action_button("", "MoveDown", move_system.bind(target, index, index + 1))
     up.flat = true
     down.flat = true
     up.disabled = not reorder or index == 0
@@ -328,13 +332,15 @@ func system_row(target: String, index: int, entry: Dictionary, reorder: bool) ->
         label.add_theme_color_override("font_color", get_theme_color("warning_color", "Editor"))
         label.tooltip_text += "\nNot in systems.json: the game will refuse a pipeline that names a missing system."
     row.add_child(label)
-    var pausable := CheckBox.new()
-    pausable.text = "Runs paused"
+    # An icon toggle: a second labelled checkbox would leave no room for the system's name.
+    var pausable := Button.new()
+    pausable.toggle_mode = true
+    pausable.icon = workbench.icon("Pause")
     pausable.button_pressed = entry["NonPausable"]
-    pausable.tooltip_text = "Keeps ticking while the pipeline is paused"
+    pausable.tooltip_text = "Pressed: keeps ticking while the pipeline is paused"
     pausable.toggled.connect(set_flag.bind(target, index, "NonPausable"))
     row.add_child(pausable)
-    var remove := workbench.action_button("", "Remove", remove_system.bind(target, index))
+    var remove: Button = workbench.action_button("", "Remove", remove_system.bind(target, index))
     remove.flat = true
     remove.tooltip_text = "Remove from " + target
     row.add_child(remove)

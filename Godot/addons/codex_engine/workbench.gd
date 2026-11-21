@@ -47,7 +47,8 @@ func _enter_tree():
     add_dock(dock)
     pipeline_dock.title = "Pipeline"
     pipeline_dock.layout_key = "CodexPipeline"
-    pipeline_dock.default_slot = EditorDock.DOCK_SLOT_RIGHT_BL
+    # Beside the Inspector: a pipeline is a long list.
+    pipeline_dock.default_slot = EditorDock.DOCK_SLOT_RIGHT_UL
     pipeline_dock.icon_name = &"Script"
     var pipeline := PipelineDock.new()
     pipeline.workbench = self
