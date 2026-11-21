@@ -1,7 +1,7 @@
-"""Checks the UrpPostProcessing grading port (without bloom) offline.
+"""Checks the PostProcessing grading port (without bloom) offline.
 
 python grade_check.py <stacks.json> <graded-dir> <nopost-dir> name [name ...]
-Applies the grade from <stacks.json> (name -> UrpVolumeStack) to <nopost-dir>/<name>.nopost.png and compares with
+Applies the grade from <stacks.json> (name -> PostStack) to <nopost-dir>/<name>.nopost.png and compares with
 Unity's own graded <graded-dir>/<name>.png. Bloom needs HDR input, so bright scenes match best.
 """
 import json, sys, pathlib

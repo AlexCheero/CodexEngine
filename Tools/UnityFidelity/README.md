@@ -20,8 +20,8 @@ Per scene it writes:
 | File | Contents |
 | --- | --- |
 | `.png` | URP frame at the requested quality level |
-| `.post.json` | blended volume stack (load as `UrpVolumeStack`) |
-| `.ambient.json` | ambient probe on ±X, ±Y, ±Z (`AmbientCubeAt` in `UnityLighting.hlsl`) |
+| `.post.json` | blended volume stack (load as `PostStack`) |
+| `.ambient.json` | ambient probe on ±X, ±Y, ±Z (`AmbientCubeAt` in `Lighting.hlsl`) |
 | `.lights.txt` | lights, shadow strength, ambient and reflection settings, terrains, reflection probes, how many light probes the baked shadows leave lit, and the interpolated probe and its occlusion at each of the scene's `probeAt` points (`"probeAt":[x,y,z, ...]` in the config) |
 | `.surfaces.json` | per mesh/material-key URP Lit smoothness, metallic (gloss maps averaged), reflection flags |
 | `.lightmaps.txt` | lightmap formats and mean decoded values |
@@ -38,7 +38,7 @@ Edit-mode renders don't run game scripts. Materials whose inputs scripts set at 
 ## Comparison
 
 `compare.py <unity-dir> <native-dir> <out-dir> names…` prints luminance percentiles, saturation and a 3×3 ratio grid
-and writes side-by-side sheets. `grade_check.py` applies the `UrpPostProcessing` grade to a Unity `nopost` frame to
+and writes side-by-side sheets. `grade_check.py` applies the `PostProcessing` grade to a Unity `nopost` frame to
 validate the grading port offline, and `component_check.py` compares each grading step with the `postkeep-*`
 experiments. `graph_dump.py` prints a Shader Graph's nodes and edges for porting.
 
@@ -50,11 +50,11 @@ experiments. `graph_dump.py` prints a Shader Graph's nodes and edges for porting
 
 ## Runtime counterparts
 
-- `UrpPostProcessing` + `Shaders/UrpPost.fx`: bloom pyramid, chromatic aberration, vignette, HDR grading, Neutral/ACES tonemapping.
+- `PostProcessing` + `Shaders/Post.fx`: bloom pyramid, chromatic aberration, vignette, HDR grading, Neutral/ACES tonemapping.
   Set `LinearScene` when the scene target holds linear radiance (URP blends transparent effects in linear space).
 - `SrgbSprites` + `Shaders/SrgbSprite.fx`: a BasicEffect replacement that decodes sRGB-authored sprites into a linear target.
-- `Shaders/UrpBrdf.hlsl`: URP Lit metallic BRDF (direct specular term, environment BRDF, reflection mip).
-- `Shaders/UnityLighting.hlsl`: exact sRGB, URP light attenuation, Unity fog, ambient cube, cross-cube lookup, directional
+- `Shaders/Brdf.hlsl`: URP Lit metallic BRDF (direct specular term, environment BRDF, reflection mip).
+- `Shaders/Lighting.hlsl`: exact sRGB, URP light attenuation, Unity fog, ambient cube, cross-cube lookup, directional
   lightmap decode, Shader Graph Voronoi.
 - `CrossCubeSkybox` + `Shaders/CrossCubeSky.fx`: cross cubemap sky with Unity's rotation convention and an HDR gain
   (a pixel-shader constant; FNA's BasicEffect clamps its colour to 1). `LinearOutput` writes linear radiance.
