@@ -6,6 +6,11 @@ using Matrix4x4 = System.Numerics.Matrix4x4;
 namespace CodexEngine.Runtime;
 
 public readonly record struct CollisionLayerPair(ushort First, ushort Second);
+/// <summary>Jolt capacities: bodies, simultaneous broad-phase pairs and contact constraints, and the solver's per-step scratch memory in bytes.</summary>
+public readonly record struct CollisionLimits(int Bodies, int BodyPairs, int ContactConstraints, int SolverMemory)
+{
+    public static readonly CollisionLimits Default = new(32768, 8192, 8192, 8 * 1024 * 1024);
+}
 public readonly record struct DynamicBodyMotion(bool LockRotation,float GravityFactor,float Friction,float LinearDamping,float AngularDamping=.05f);
 public readonly record struct CompoundPart(CollisionShape Shape,Vector3 Position,Quaternion Rotation);
 
@@ -222,7 +227,7 @@ public partial class CollisionWorld
     {
         if (!solverInitialized)
         {
-            temporaryMemory = TempAllocatorImpl.Create(8 * 1024 * 1024);
+            temporaryMemory = TempAllocatorImpl.Create((uint)limits.SolverMemory);
             solverJobs = JobSystemThreadPool.Create(2048, 8, Math.Clamp(Environment.ProcessorCount / 2, 1, 4));
             solverInitialized = true;
         }

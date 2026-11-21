@@ -178,6 +178,10 @@ public partial class CollisionWorld : IDisposable
     private readonly CollisionWorld previous;
     private bool disposed;
 
+    /// <summary>Capacities for worlds created from now on. Raise them before building a world for an unusually large crowd.</summary>
+    public static CollisionLimits Limits { get; set; } = CollisionLimits.Default;
+    private readonly CollisionLimits limits;
+
     public CollisionWorld(params ReadOnlySpan<CollisionLayerPair> collisions)
     {
         lock (factoryLock)
@@ -189,8 +193,9 @@ public partial class CollisionWorld : IDisposable
         for (ushort i = 0; i < 64; i++) layers.MapObjectToBroadPhaseLayer(i,0);
         foreach (var pair in collisions) pairs.EnableCollision(pair.First, pair.Second);
         broad = ObjectVsBroadPhaseLayerFilterTable.Create(layers,1,pairs,64);
+        limits = Limits;
         system = PhysicsSystem.Create();
-        system.Init(32768,0,8192,8192,layers,broad,pairs);
+        system.Init((uint)limits.Bodies,0,(uint)limits.BodyPairs,(uint)limits.ContactConstraints,layers,broad,pairs);
         Bodies = system.GetBodyInterface();
         query = system.GetNarrowPhaseQuery();
         CreateQuerySettings();
