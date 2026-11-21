@@ -3,9 +3,22 @@ using Microsoft.Xna.Framework.Graphics;
 
 namespace CodexEngine.Rendering;
 
-/// <summary>Removes occluded ambient radiance from opaque perspective geometry before transparent draws.</summary>
+/// <summary>
+/// Keeps the surface target the opaque pass writes beside the scene (ambient radiance and eye depth), and removes
+/// occluded ambient radiance from opaque perspective geometry before transparent draws. The same target then serves
+/// whatever follows and needs the depth behind a pixel: soft particles, decals, refraction.
+/// </summary>
 public sealed class ScreenSpaceAmbientOcclusion : IDisposable
 {
+    /// <summary>
+    /// The depth the surface target holds where no surface was drawn. It lies beyond any scene on purpose: a
+    /// multisample resolve or a filtered read averages it with the surfaces beside a silhouette, and a far average
+    /// leaves what stands in front of that silhouette untouched, where a zero would pull it toward the eye.
+    /// </summary>
+    public const float SkyDepth = 32768;
+
+    static readonly Vector4 NoSurface = new(0, 0, 0, SkyDepth);
+
     readonly GraphicsDevice gpu;
     readonly Effect effect;
     readonly EffectParameter surface, mask, camera, settings, maskTexel;
@@ -20,6 +33,14 @@ public sealed class ScreenSpaceAmbientOcclusion : IDisposable
         ColorWriteChannels = ColorWriteChannels.Red | ColorWriteChannels.Green | ColorWriteChannels.Blue
     };
     RenderTarget2D ambientDepth, occlusion;
+
+    /// <summary>
+    /// The surface target of the frame being drawn: ambient RGB, and in alpha the eye depth along the view axis in
+    /// world units (<see cref="SkyDepth"/> where the sky shows). It can be sampled once the opaque pass has ended,
+    /// after <see cref="Apply"/> or <see cref="EndOpaque"/>, and holds the opaque surfaces only. On a multisampled
+    /// scene each texel is the average of its samples. Null before the first frame.
+    /// </summary>
+    public Texture2D Surfaces => ambientDepth;
 
     public ScreenSpaceAmbientOcclusion(GraphicsDevice gpu, string effectPath)
     {
@@ -39,8 +60,46 @@ public sealed class ScreenSpaceAmbientOcclusion : IDisposable
         });
     }
 
+    /// <summary>
+    /// Write only the scene target, leaving the ambient-depth target as cleared. For what is drawn after
+    /// <see cref="BeginScene"/> and is no surface: the sky.
+    /// </summary>
+    public static readonly BlendState SceneOnly = new()
+    {
+        Name = "CodexEngine.SceneOnly", ColorSourceBlend = Blend.One, ColorDestinationBlend = Blend.Zero,
+        AlphaSourceBlend = Blend.One, AlphaDestinationBlend = Blend.Zero, ColorWriteChannels1 = ColorWriteChannels.None
+    };
+
+    /// <summary>
+    /// Starts the frame with both targets bound and cleared, in place of clearing the scene, drawing the sky and
+    /// calling <see cref="BeginOpaque"/>. Every target switch ends a render pass, and on a multisampled scene
+    /// each end resolves all its samples; this start saves two. The scene's colour is left undefined, so draw
+    /// a sky that covers it, with <see cref="SceneOnly"/>.
+    /// </summary>
+    public void BeginScene(RenderTarget2D scene)
+    {
+        Prepare(scene);
+        targets[0] = new RenderTargetBinding(scene);
+        gpu.SetRenderTargets(targets);
+        gpu.Clear(ClearOptions.Target | ClearOptions.DepthBuffer | ClearOptions.Stencil, NoSurface, 1, 0);
+    }
+
     /// <summary>Scene colour and depth must preserve their contents across target switches.</summary>
     public void BeginOpaque(RenderTarget2D scene)
+    {
+        Prepare(scene);
+        gpu.SetRenderTarget(ambientDepth);
+        gpu.Clear(ClearOptions.Target,NoSurface,1,0);
+        targets[0] = new RenderTargetBinding(scene);
+        gpu.SetRenderTargets(targets);
+    }
+
+    /// <summary>
+    /// Ends the opaque pass without occlusion: the scene alone stays bound and <see cref="Surfaces"/> can be read.
+    /// </summary>
+    public void EndOpaque() => gpu.SetRenderTarget((RenderTarget2D)targets[0].RenderTarget);
+
+    void Prepare(RenderTarget2D scene)
     {
         if (ambientDepth == null || ambientDepth.Width != scene.Width || ambientDepth.Height != scene.Height ||
             ambientDepth.MultiSampleCount != scene.MultiSampleCount)
@@ -60,13 +119,12 @@ public sealed class ScreenSpaceAmbientOcclusion : IDisposable
             targets[1] = new RenderTargetBinding(ambientDepth);
             maskTexel.SetValue(new Vector2(1f/occlusion.Width,1f/occlusion.Height));
         }
-        gpu.SetRenderTarget(ambientDepth);
-        gpu.Clear(ClearOptions.Target,Color.Transparent,1,0);
-        targets[0] = new RenderTargetBinding(scene);
-        gpu.SetRenderTargets(targets);
     }
 
-    /// <summary>COLOR1 stores ambient RGB and positive axial view depth. Zero depth identifies background.</summary>
+    /// <summary>
+    /// Ends the opaque pass and darkens the scene's ambient light where surfaces close in on each other. COLOR1
+    /// stores ambient RGB and positive axial view depth; <see cref="SkyDepth"/> identifies background.
+    /// </summary>
     public void Apply(Matrix projection, float radius, float strength)
     {
         gpu.SetRenderTarget(occlusion);

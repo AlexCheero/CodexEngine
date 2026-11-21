@@ -297,7 +297,11 @@ public static class CodexFidelityCapture
             lights.Add($"Terrain {t.name} mat={(t.materialTemplate?t.materialTemplate.shader.name:"default")} lm={t.lightmapIndex} trees={t.terrainData.treeInstanceCount} draw={t.drawTreesAndFoliage} treeDist={t.treeDistance} billboard={t.treeBillboardDistance} detailDist={t.detailObjectDistance} layers={string.Join(",",t.terrainData.terrainLayers.Select(x=>x?x.name+"/"+x.smoothness+"/"+x.metallic+"/"+x.specular:"null"))}");
         lights.Add($"ambientMode={RenderSettings.ambientMode} sky={RenderSettings.ambientSkyColor} equator={RenderSettings.ambientEquatorColor} ground={RenderSettings.ambientGroundColor} intensity={RenderSettings.ambientIntensity} reflection={RenderSettings.defaultReflectionMode} reflIntensity={RenderSettings.reflectionIntensity} bounces={RenderSettings.reflectionBounces} sun={(RenderSettings.sun?RenderSettings.sun.name:"none")} subtractive={RenderSettings.subtractiveShadowColor}");
         lights.Add($"shadowDistance={QualitySettings.shadowDistance} urpShadowDistance={((UniversalRenderPipelineAsset)GraphicsSettings.currentRenderPipeline).shadowDistance} cascades={((UniversalRenderPipelineAsset)GraphicsSettings.currentRenderPipeline).shadowCascadeCount}");
-        foreach(var probe in UnityEngine.Object.FindObjectsByType<ReflectionProbe>(FindObjectsSortMode.None))lights.Add($"ReflectionProbe {probe.name} mode={probe.mode} tex={(probe.texture?probe.texture.name:"none")} intensity={probe.intensity} pos={probe.transform.position} size={probe.size}");
+        // at: where the probe captures from. box: the world-space volume whose renderers reflect it.
+        foreach(var probe in UnityEngine.Object.FindObjectsByType<ReflectionProbe>(FindObjectsSortMode.None)){
+            string Exact(Vector3 v)=>"("+F(v.x)+","+F(v.y)+","+F(v.z)+")";
+            lights.Add($"ReflectionProbe {probe.name} mode={probe.mode} tex={(probe.texture?probe.texture.name:"none")} intensity={probe.intensity} pos={probe.transform.position} size={probe.size} enabled={probe.isActiveAndEnabled} at={Exact(probe.transform.position)} boxCenter={Exact(probe.bounds.center)} boxSize={Exact(probe.bounds.size)} near={F(probe.nearClipPlane)} far={F(probe.farClipPlane)} boxProjection={probe.boxProjection} resolution={probe.resolution} refresh={probe.refreshMode} importance={probe.importance}");
+        }
         {
             var sh=RenderSettings.ambientProbe;var dirs=new[]{Vector3.up,Vector3.down,Vector3.forward,Vector3.right};var res=new Color[4];
             sh.Evaluate(dirs,res);
@@ -306,6 +310,20 @@ public static class CodexFidelityCapture
             File.WriteAllText(Path.Combine(Path.GetDirectoryName(path),level+".ambient.json"),"["+string.Join(",",cube.Select(c=>"["+c.r.ToString("R",CultureInfo.InvariantCulture)+","+c.g.ToString("R",CultureInfo.InvariantCulture)+","+c.b.ToString("R",CultureInfo.InvariantCulture)+"]"))+"]");
         }
         lights.Add($"lightProbes={(LightmapSettings.lightProbes?LightmapSettings.lightProbes.count:0)}");
+        // <level>.lightprobes: the baked light probes, for CodexEngine.Rendering.IrradianceProbes.Read. After the tag and the
+        // count, each probe is its position and its irradiance on the six axes (+X,-X,+Y,-Y,+Z,-Z): 3 + 18 floats.
+        if(LightmapSettings.lightProbes && LightmapSettings.lightProbes.count>0){
+            var positions=LightmapSettings.lightProbes.positions;var baked=LightmapSettings.lightProbes.bakedProbes;
+            var axes=new[]{Vector3.right,Vector3.left,Vector3.up,Vector3.down,Vector3.forward,Vector3.back};var cube=new Color[6];
+            using(var probeFile=new BinaryWriter(File.Create(Path.Combine(Path.GetDirectoryName(path),level+".lightprobes")))){
+                probeFile.Write(0x42504C43);probeFile.Write(positions.Length);
+                for(int probe=0;probe<positions.Length;probe++){
+                    probeFile.Write(positions[probe].x);probeFile.Write(positions[probe].y);probeFile.Write(positions[probe].z);
+                    baked[probe].Evaluate(axes,cube);
+                    foreach(var lobe in cube){probeFile.Write(lobe.r);probeFile.Write(lobe.g);probeFile.Write(lobe.b);}
+                }
+            }
+        }
         File.WriteAllLines(Path.Combine(Path.GetDirectoryName(path),level+".lights.txt"),lights);
         Debug.Log("FIDELITY captured "+path);
     }

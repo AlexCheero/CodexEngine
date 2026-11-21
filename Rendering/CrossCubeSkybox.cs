@@ -44,11 +44,12 @@ public sealed class CrossCubeSkybox : IDisposable
     }
     /// <summary>Write linear radiance (for a linear scene target) instead of the encoded value.</summary>
     public bool LinearOutput { set => shader.Parameters["LinearOutput"].SetValue(value ? 1f : 0f); }
-    public void Draw(Matrix view, Matrix projection)
+    /// <param name="blend">Opaque by default. A frame with further colour targets bound passes one that writes only the first.</param>
+    public void Draw(Matrix view, Matrix projection, BlendState blend = null)
     {
         view.Translation=Vector3.Zero;
         shader.Parameters["WorldViewProjection"].SetValue(world*view*projection);
-        gpu.BlendState=BlendState.Opaque; gpu.DepthStencilState=DepthStencilState.None;
+        gpu.BlendState=blend ?? BlendState.Opaque; gpu.DepthStencilState=DepthStencilState.None;
         gpu.RasterizerState=RasterizerState.CullNone;
         shader.CurrentTechnique.Passes[0].Apply();
         gpu.DrawUserPrimitives(PrimitiveType.TriangleList,vertices,0,12);

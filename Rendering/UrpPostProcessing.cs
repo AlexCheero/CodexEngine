@@ -55,9 +55,34 @@ public sealed class UrpPostProcessing : IDisposable
     readonly VertexPositionTexture[] triangle =
         [new(new(-1, 1, 0), new(0, 0)), new(new(3, 1, 0), new(2, 0)), new(new(-1, -3, 0), new(0, 2))];
     RenderTarget2D[] down = [], up = [];
+    RenderTarget2D encoded, shaftA, shaftB;
+
+    /// <summary>
+    /// Light shafts for one frame: sky near the sun streaks toward the viewer past whatever stands in front of it.
+    /// <paramref name="Sun"/> is the sun's position on screen (0 to 1, may lie outside), <paramref name="Tint"/>
+    /// scales the sky's own radiance and <paramref name="Reach"/> is how far toward the sun a streak is gathered
+    /// from, as a share of the distance. Sky dimmer than <paramref name="Threshold"/> (linear radiance) feeds no
+    /// shaft. Costs three quarter-size passes.
+    /// </summary>
+    public readonly record struct LightShafts(Vector2 Sun, Vector3 Tint, float Reach, float Threshold);
+
+    /// <summary>
+    /// Set each frame before <see cref="Render"/>, or to null for none. The scene's alpha must then tell sky from
+    /// surface: 1 where the sky shows, lower on anything drawn over it (an eye distance d stored as d/(32+d) does).
+    /// </summary>
+    public LightShafts? Shafts { get; set; }
 
     /// <summary>True when the scene texture holds linear radiance; false (default) when it is sRGB-encoded.</summary>
     public bool LinearScene { get; set; }
+
+    /// <summary>
+    /// Smooths edges in the graded frame with one more full-screen pass (FXAA). Unlike multisampling it also
+    /// reaches alpha cutouts, dithered fades and shading detail, at the price of a slightly softer image.
+    /// </summary>
+    public bool EdgeSmoothing { get; set; }
+
+    /// <summary>Adds one display step of noise before the 8-bit write, so dark gradients show no bands.</summary>
+    public bool Dither { get; set; } = true;
 
     public UrpPostProcessing(GraphicsDevice gpu, string effectPath)
     {
@@ -136,6 +161,26 @@ public sealed class UrpPostProcessing : IDisposable
         var tint = new Vector3(GammaToLinear(s.BloomTint[0]), GammaToLinear(s.BloomTint[1]), GammaToLinear(s.BloomTint[2]));
         float luma = Luminance(tint); tint = luma > 0 ? tint / luma : Vector3.One;
         p["BloomComposite"].SetValue(new Vector4(tint * s.Bloom[0], s.BloomHQ));
+        float aspect = (float)source.Width / source.Height;
+        if (Shafts is { } shaft && shaft.Tint != Vector3.Zero)
+        {
+            int sw = Math.Max(1, source.Width / 4), sh = Math.Max(1, source.Height / 4);
+            if (shaftA == null || shaftA.Width != sw || shaftA.Height != sh)
+            {
+                shaftA?.Dispose(); shaftB?.Dispose();
+                shaftA = new(gpu, sw, sh, false, SurfaceFormat.HalfVector4, DepthFormat.None);
+                shaftB = new(gpu, sw, sh, false, SurfaceFormat.HalfVector4, DepthFormat.None);
+            }
+            p["SceneIsLinear"].SetValue(LinearScene ? 1f : 0f);
+            p["ShaftSource"].SetValue(new Vector4(shaft.Sun, shaft.Reach, aspect));
+            p["ShaftThreshold"].SetValue(shaft.Threshold);
+            Pass(source, shaftA, "ShaftMask");
+            Pass(shaftA, shaftB, "ShaftBlur");
+            p["ShaftSource"].SetValue(new Vector4(shaft.Sun, shaft.Reach / 8, aspect));
+            Pass(shaftB, shaftA, "ShaftBlur");
+            p["ShaftTexture"].SetValue(shaftA); p["ShaftLight"].SetValue(new Vector4(shaft.Tint, 1));
+        }
+        else { p["ShaftTexture"].SetValue(down[0]); p["ShaftLight"].SetValue(Vector4.Zero); }
         // The chain also runs at zero intensity: skipping it can leave the composite reading stale device state.
         Pass(source, down[0], "Prefilter");
         for (int i = 1; i < mips; i++) { Pass(down[i - 1], up[i], "BlurH"); Pass(up[i], down[i], "BlurV"); }
@@ -153,14 +198,21 @@ public sealed class UrpPostProcessing : IDisposable
         p["GradeLift"].SetValue(Lift(s.Lift)); p["GradeGamma"].SetValue(InverseGamma(s.Gamma)); p["GradeGain"].SetValue(Gain(s.Gain));
         p["GradeShadows"].SetValue(Tone(s.Shadows)); p["GradeMidtones"].SetValue(Tone(s.Midtones)); p["GradeHighlights"].SetValue(Tone(s.Highlights));
         p["GradeLimits"].SetValue(new Vector4(s.SmhLimits[0], s.SmhLimits[1], s.SmhLimits[2], s.SmhLimits[3]));
-        float aspect = (float)source.Width / source.Height;
         p["VignetteParams"].SetValue(new Vector4(s.Vignette[3], s.Vignette[4], s.Vignette[0] * 3, s.Vignette[1] * 5));
         p["VignetteColor"].SetValue(new Vector4(s.VignetteColor[0], s.VignetteColor[1], s.VignetteColor[2], s.Vignette[2] > 0 ? aspect : 1));
         p["ChromaAmount"].SetValue(s.Chromatic * .05f);
         p["SceneIsLinear"].SetValue(LinearScene ? 1f : 0f);
-        Pass(source, destination, "Composite");
+        p["Output"].SetValue(new Vector2(Dither ? 1f / 255 : 0, EdgeSmoothing ? 1 : 0));
+        if (!EdgeSmoothing) { Pass(source, destination, "Composite"); return; }
+        if (encoded == null || encoded.Width != source.Width || encoded.Height != source.Height)
+        {
+            encoded?.Dispose();
+            encoded = new(gpu, source.Width, source.Height, false, SurfaceFormat.Color, DepthFormat.None);
+        }
+        Pass(source, encoded, "Composite");
+        Pass(encoded, destination, "Smooth");
     }
 
     void ReleaseChain() { foreach (var t in down) t.Dispose(); foreach (var t in up) t.Dispose(); down = up = []; }
-    public void Dispose() { ReleaseChain(); effect.Dispose(); }
+    public void Dispose() { ReleaseChain(); encoded?.Dispose(); shaftA?.Dispose(); shaftB?.Dispose(); effect.Dispose(); }
 }

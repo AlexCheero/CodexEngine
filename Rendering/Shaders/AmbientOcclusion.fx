@@ -8,6 +8,9 @@ sampler2D MaskSamples : register(s1) = sampler_state {
 float2 MaskTexel;
 float4 Camera; // inverse dimensions, inverse perspective scales
 float2 Settings; // world-space radius, ambient strength
+// The surface target is cleared to a depth of 32768 (ScreenSpaceAmbientOcclusion.SkyDepth). A multisampled pixel
+// with a single sky sample among eight already averages past this limit, so it counts as background too.
+#define BACKGROUND 4096.0
 
 struct Quad { float4 position : POSITION0; float2 uv : TEXCOORD0; };
 Quad Project(Quad v) { return v; }
@@ -30,7 +33,8 @@ float Obstruction(float2 uv, float2 pixels, float3 p, float3 n) {
     float3 neighbor = ReadPosition(tap);
     float3 d = neighbor-p;
     float d2 = dot(d,d);
-    float valid = all(tap>=0) && all(tap<=1) && neighbor.z<0;
+    // A background neighbour needs no test of its own: it lies far outside the radius.
+    float valid = all(tap>=0) && all(tap<=1);
     float elevation = saturate((dot(n,d)-max(.012,-p.z*.001))*rsqrt(max(d2,1e-6))-.04);
     return valid*elevation*saturate(1-d2/(Settings.x*Settings.x));
 }
@@ -38,7 +42,7 @@ float2 SurfaceCenter(float2 uv) { return (floor(uv/Camera.xy+.001)+.5)*Camera.xy
 float4 EstimateOcclusion(Quad v) : COLOR0 {
     float2 uv = SurfaceCenter(v.uv);
     float4 surface = tex2D(Samples,uv);
-    if (surface.a<=0) return 0;
+    if (surface.a>=BACKGROUND) return 0;
     float3 p = Position(uv,surface.a);
     float2 dx = float2(Camera.x,0), dy = float2(0,Camera.y);
     float3 x = Tangent(p,ReadPosition(uv-dx),ReadPosition(uv+dx));
@@ -67,7 +71,7 @@ float4 EstimateOcclusion(Quad v) : COLOR0 {
 
 float4 CompositeAmbient(Quad v) : COLOR0 {
     float4 surface = tex2D(Samples,v.uv);
-    if (surface.a<=0) return 0;
+    if (surface.a>=BACKGROUND) return 0;
     float3 receiver = Position(v.uv,surface.a);
     float2 maskPixel = v.uv/MaskTexel-.5;
     float2 home = floor(maskPixel+.5);

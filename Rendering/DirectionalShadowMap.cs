@@ -3,45 +3,113 @@ using Microsoft.Xna.Framework.Graphics;
 
 namespace CodexEngine.Rendering;
 
-/// <summary>A camera-centred orthographic sun map. Direction points from a receiver toward the light.</summary>
+/// <summary>
+/// Orthographic sun shadows around the camera, in one to four nested cascades that share an atlas. Each cascade
+/// spends the same texels on a third of the next one's width, so shadows near the eye are sharp without a larger
+/// map. Direction points from a receiver toward the light.
+/// </summary>
 public sealed class DirectionalShadowMap : IDisposable
 {
+    public const int MaxCascades = 4;
+    // A tile's outer texels stay unused so the filter never reads its neighbour, and a receiver nearing the edge
+    // blends into the next cascade over this share of the tile. DirectionalShadows.hlsl receives both.
+    const float BorderTexels = 4, Band = .12f;
+    // How far ahead of the eye a cascade sits, in half-sizes. The eye stays inside when it looks along the light.
+    const float Lead = .6f;
+
     readonly GraphicsDevice gpu;
     readonly RenderTarget2D depth;
-    readonly BoundingFrustum frustum = new(Matrix.Identity);
-    readonly float radius, casterDepth, texel;
+    readonly int resolution, filter;
+    readonly float casterDepth, limit;
     readonly Matrix basis;
-    Vector3 center;
-    public Vector3 Direction { get; }
-    public Matrix ViewProjection { get; private set; }
+    readonly float[] radius;
+    readonly Vector3[] origin;
+    readonly Matrix[] viewProjection;
+    readonly BoundingFrustum widest = new(Matrix.Identity);
+    readonly Vector4[] cascadeData = new Vector4[MaxCascades];
+    int current;
 
-    public DirectionalShadowMap(GraphicsDevice gpu, Vector3 direction, int resolution, float radius, float casterDepth)
+    public Vector3 Direction { get; }
+    public int Cascades => radius.Length;
+    /// <summary>The cascade being drawn: the first after <see cref="Begin"/>, then the one given to <see cref="BeginCascade"/>.</summary>
+    public Matrix ViewProjection => viewProjection[current];
+
+    /// <param name="resolution">Texels along one side of each cascade.</param>
+    /// <param name="radius">Half the width of the widest cascade, in world units.</param>
+    /// <param name="casterDepth">Light-space depth kept on either side of a cascade's centre.</param>
+    /// <param name="cascades">Each cascade is a third as wide as the next.</param>
+    /// <param name="filter">Comparisons per lookup along one axis: 2, 3 or 4. The cost grows with its square.</param>
+    public DirectionalShadowMap(GraphicsDevice gpu, Vector3 direction, int resolution, float radius, float casterDepth,
+        int cascades = 1, int filter = 4)
     {
         this.gpu = gpu;
-        this.radius = radius;
+        this.resolution = resolution;
         this.casterDepth = casterDepth;
+        this.filter = Math.Clamp(filter, 2, 4);
+        cascades = Math.Clamp(cascades, 1, MaxCascades);
+        limit = 1 - 2 * BorderTexels / resolution;
         Direction = Vector3.Normalize(direction);
         var up = Math.Abs(Direction.Y) > .99f ? Vector3.Forward : Vector3.Up;
         basis = Matrix.CreateLookAt(Vector3.Zero, -Direction, up);
-        texel = 2 * radius / resolution;
-        depth = new RenderTarget2D(gpu, resolution, resolution, false, SurfaceFormat.Single, DepthFormat.Depth24);
+        this.radius = new float[cascades];
+        for (int i = cascades - 1; i >= 0; i--) this.radius[i] = i == cascades - 1 ? radius : this.radius[i + 1] / 3;
+        origin = new Vector3[cascades];
+        viewProjection = new Matrix[cascades];
+        depth = new RenderTarget2D(gpu, resolution * cascades, resolution, false, SurfaceFormat.Single, DepthFormat.Depth24);
     }
 
+    /// <summary>Centres every cascade on one point.</summary>
     public void Position(Vector3 center)
     {
-        this.center = center;
-        var origin = Vector3.Transform(center, basis);
-        // Lock the light-space grid to world texels as the eye translates or turns.
-        origin.X = MathF.Round(origin.X / texel) * texel;
-        origin.Y = MathF.Round(origin.Y / texel) * texel;
-        origin.Z += casterDepth;
-        ViewProjection = basis * Matrix.CreateTranslation(-origin) *
-            Matrix.CreateOrthographic(2 * radius, 2 * radius, 0, 2 * casterDepth);
-        frustum.Matrix = ViewProjection;
+        for (int i = 0; i < radius.Length; i++) Place(i, center);
     }
 
-    public bool Intersects(BoundingSphere bounds) => frustum.Intersects(bounds);
+    /// <summary>Places each cascade ahead of the eye by a share of its own size, so most of it lies in view.</summary>
+    public void Position(Vector3 eye, Vector3 forward)
+    {
+        for (int i = 0; i < radius.Length; i++) Place(i, eye + forward * (radius[i] * Lead));
+    }
 
+    void Place(int i, Vector3 center)
+    {
+        float texel = 2 * radius[i] / resolution;
+        var o = Vector3.Transform(center, basis);
+        // Lock the light-space grid to world texels as the eye translates or turns.
+        o.X = MathF.Round(o.X / texel) * texel;
+        o.Y = MathF.Round(o.Y / texel) * texel;
+        o.Z += casterDepth;
+        origin[i] = o;
+        viewProjection[i] = basis * Matrix.CreateTranslation(-o) *
+            Matrix.CreateOrthographic(2 * radius[i], 2 * radius[i], 0, 2 * casterDepth);
+        cascadeData[i] = new Vector4(o, 1 / radius[i]);
+        if (i == radius.Length - 1) widest.Matrix = viewProjection[i];
+    }
+
+    /// <summary>Whether the bounds reach any cascade. Safe on culling workers once the map is positioned.</summary>
+    public bool Reaches(BoundingSphere bounds) => widest.Intersects(bounds);
+
+    /// <summary>
+    /// Whether a caster must be drawn into the current cascade: it reaches the cascade, and no smaller cascade
+    /// holds it whole. A shadow falls along the light, so receivers of a caster held whole by a smaller cascade
+    /// all read that cascade.
+    /// </summary>
+    public bool Intersects(BoundingSphere bounds)
+    {
+        var p = Vector3.Transform(bounds.Center, basis);
+        var o = origin[current];
+        float reach = radius[current] + bounds.Radius, behind = o.Z - p.Z;
+        if (MathF.Abs(p.X - o.X) > reach || MathF.Abs(p.Y - o.Y) > reach ||
+            behind < -bounds.Radius || behind > 2 * casterDepth + bounds.Radius) return false;
+        for (int i = 0; i < current; i++)
+        {
+            // Inside the part of the smaller cascade that never blends outward, less the wider filter's footprint.
+            float held = radius[i] * (limit - Band) - 4 * (2 * radius[i + 1] / resolution) - bounds.Radius;
+            if (MathF.Abs(p.X - origin[i].X) < held && MathF.Abs(p.Y - origin[i].Y) < held) return false;
+        }
+        return true;
+    }
+
+    /// <summary>Binds and clears the atlas and starts the first cascade.</summary>
     public void Begin()
     {
         // DirectionalShadows.hlsl reserves pixel sampler 1 for this target.
@@ -51,16 +119,26 @@ public sealed class DirectionalShadowMap : IDisposable
         gpu.DepthStencilState = DepthStencilState.Default;
         gpu.RasterizerState = RasterizerState.CullNone;
         gpu.Clear(Color.White);
+        BeginCascade(0);
+    }
+
+    /// <summary>Directs drawing to one cascade's tile. Draw its casters with <see cref="ViewProjection"/>.</summary>
+    public void BeginCascade(int index)
+    {
+        current = index;
+        gpu.Viewport = new Viewport(index * resolution, 0, resolution, resolution);
     }
 
     /// <summary>Call after switching to the colour target. Disable for independently lit preview scenes.</summary>
     public void BindReceiver(Effect material, bool enabled)
     {
-        material.Parameters["SunDirection"].SetValue(Direction);
-        material.Parameters["ShadowCenter"].SetValue(center);
-        material.Parameters["ShadowViewProjection"].SetValue(ViewProjection);
-        material.Parameters["ShadowTexture"].SetValue(enabled ? depth : null);
-        material.Parameters["ShadowMetrics"].SetValue(new Vector4(1f / depth.Width, texel, radius, enabled ? 1 : 0));
+        var p = material.Parameters;
+        p["SunDirection"].SetValue(Direction);
+        p["ShadowBasis"].SetValue(basis);
+        p["ShadowCascades"].SetValue(cascadeData);
+        p["ShadowTexture"].SetValue(enabled ? depth : null);
+        p["ShadowMetrics"].SetValue(new Vector4(1f / resolution, 1 / (2 * casterDepth), radius.Length, enabled ? 1 : 0));
+        p["ShadowFilter"].SetValue(new Vector4(filter, limit, Band, 0));
     }
 
     public void Dispose() => depth.Dispose();

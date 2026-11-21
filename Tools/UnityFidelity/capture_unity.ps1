@@ -3,7 +3,8 @@
 #   -Config  JSON: {"quality":3,"scenes":[{"name":"Level","scene":"Assets/..unity","additive":[],"cameraPrefab":"Assets/..prefab"}]}
 #   -Poses   folder with <name>.png.camera.json files: {"eye":[x,y,z],"forward":[..],"up":[..],"fov":deg,"width":w,"height":h}
 #   -Out     folder for <name>[.<experiment>].png, .post.json (URP volume stack), .lights.txt, .ambient.json,
-#            .surfaces.json (per-mesh URP Lit parameters), .lightmaps.txt and .probe.txt
+#            .surfaces.json (per-mesh URP Lit parameters), .lightmaps.txt, .probe.txt and, where the scene has baked
+#            light probes, .lightprobes (their positions and six-axis irradiance)
 param([Parameter(Mandatory)][string]$Source,[Parameter(Mandatory)][string]$Config,[Parameter(Mandatory)][string]$Poses,
       [Parameter(Mandatory)][string]$Out,[string]$Experiment="",[int]$Quality=-1,[string]$Unity,[string]$Probe="")
 $ErrorActionPreference="Stop"
