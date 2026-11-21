@@ -62,7 +62,7 @@ public sealed class IrradianceProbes : IDisposable
     }
 
     /// <summary>
-    /// Reads light probes placed at arbitrary points (a Unity scene's baked probes, as Tools/UnityFidelity writes
+    /// Reads light probes placed at arbitrary points (an imported scene's baked probes, as a scene exporter writes
     /// its .lightprobes file) and resamples them onto a grid whose longest side has <paramref name="cells"/> probes.
     /// A grid costs the shader three filtered samples wherever the object is, where the source's tetrahedra would
     /// need a search per object.

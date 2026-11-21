@@ -16,7 +16,6 @@ public sealed class SurfaceMaterial
     /// <summary>
     /// Scales for the mask's metalness and smoothness, the strength of the normal map, and which specular
     /// light the surface takes: two if it mirrors its surroundings, plus one if it shows lights' highlights.
-    /// Unity's Simple Lit has no reflections and a highlight only when switched on.
     /// </summary>
     public Vector4 Factors { get; init; } = new(0, 0, 1, Specular(true, true));
     public static float Specular(bool reflections, bool highlights) => (reflections ? 2 : 0) + (highlights ? 1 : 0);

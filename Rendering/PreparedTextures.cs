@@ -9,7 +9,7 @@ public enum TextureUse
     /// <summary>
     /// Display-encoded colour with optional coverage in alpha. Levels average linear light, and a power-of-two
     /// image is stored as BC7: a quarter of the memory and of the bytes each sample pulls in. A PNG keeps the
-    /// colour it holds under zero alpha, which filtering blends into the rim of a cutout, as Unity's import does.
+    /// colour it holds under zero alpha, which filtering blends into the rim of a cutout.
     /// </summary>
     Colour,
     /// <summary>A number per channel: normals, masks, blend weights. Levels average the stored values.</summary>
@@ -153,7 +153,7 @@ public static class TexturePreparation
         return result;
     }
 
-    // A plain box, as Unity builds its levels: colour under zero alpha takes part like any other.
+    // A plain box: colour under zero alpha takes part like any other.
     static void Average(ReadOnlySpan<float> texel, Span<float> result)
     {
         for (int c = 0; c < 4; c++) result[c] = (texel[c] + texel[4 + c] + texel[8 + c] + texel[12 + c]) * .25f;

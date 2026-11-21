@@ -21,7 +21,7 @@ public sealed class CharacterMotor : IDisposable
     public Vector3 Feet=>CollisionWorld.Managed(character.GetPosition())-Vector3.up*halfHeight;
     public Vector3 WallNormal {get;private set;}
     /// <summary>
-    /// When false, moving bodies block the character but never carry or shove it, like Unity's CharacterController,
+    /// When false, moving bodies block the character but never carry or shove it,
     /// which only moves through its own Move calls. Defaults to Jolt's behaviour: contacts pass on their velocity.
     /// </summary>
     public bool MovingContactsPush {get=>contacts.MovingPush;set=>contacts.MovingPush=value;}

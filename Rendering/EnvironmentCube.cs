@@ -6,7 +6,7 @@ namespace CodexEngine.Rendering;
 
 /// <summary>
 /// A cubemap of the surroundings for reflections, with each smaller level convolved for a rougher surface (GGX),
-/// as a reflection probe stores it. Sample it with <c>texCUBElod(cube, float4(reflection, UrpReflectionMip(brdf)))</c>.
+/// as a reflection probe stores it. Sample it with <c>texCUBElod(cube, float4(reflection, ReflectionMip(brdf)))</c>.
 /// It holds linear radiance in half floats, so the shader neither decodes it nor applies a sky gain.
 /// <para>
 /// The surroundings come from a sky image (<see cref="FromCross"/>) or from the scene itself, drawn around a point
@@ -17,12 +17,12 @@ namespace CodexEngine.Rendering;
 /// </summary>
 public static class EnvironmentCube
 {
-    /// <summary>The edge of Unity's default reflection cubemap, whose levels URP's roughness-to-level curve assumes.</summary>
+    /// <summary>The edge of the reflection cubemap whose levels the roughness-to-level curve (ReflectionMip) assumes.</summary>
     public const int Size = 128;
 
     /// <summary>
     /// Builds the cube from a horizontal-cross sky image (4×3 faces: -X,+Z,+X,-Z in the middle row, as
-    /// <see cref="CrossCubeSkybox"/> draws it). <paramref name="rotation"/> is Unity's skybox rotation in degrees
+    /// <see cref="CrossCubeSkybox"/> draws it). <paramref name="rotation"/> is the sky's rotation in degrees
     /// and <paramref name="gain"/> the display-encoded gain the sky is drawn with; both are baked in.
     /// The convolution runs on the workers and takes a few tens of milliseconds.
     /// </summary>
@@ -42,7 +42,7 @@ public static class EnvironmentCube
             }
         float faceW = width / 4f, faceH = height / 3f;
 
-        // Radiance from the cross for a world direction, as UnityLighting.hlsl's CrossCubeUV finds it.
+        // Radiance from the cross for a world direction, as Lighting.hlsl's CrossCubeUV finds it.
         Vector3 Sky(Vector3 d)
         {
             (d.X, d.Z) = (d.X * cos + d.Z * sin, d.Z * cos - d.X * sin);
@@ -78,7 +78,7 @@ public static class EnvironmentCube
 
     /// <summary>
     /// The cube's levels from its faces (6·<see cref="Size"/>² texels of linear radiance, face after face, rows from
-    /// the top). Level 0 is the faces themselves; each smaller one is their GGX convolution for the roughness URP
+    /// the top). Level 0 is the faces themselves; each smaller one is their GGX convolution for the roughness ReflectionMip
     /// maps to it. Touches no graphics device, so it can run off the game thread; it spreads over the workers itself.
     /// </summary>
     public static HalfVector4[][] Convolve(Vector3[] faces)
@@ -118,7 +118,7 @@ public static class EnvironmentCube
                 for (int i = 0; i < texels.Length; i++) texels[i] = new(faces[i].X, faces[i].Y, faces[i].Z, 1);
                 continue;
             }
-            // The perceptual roughness URP maps to this level: level = r(1.7 - 0.7r)·6, inverted.
+            // The perceptual roughness ReflectionMip maps to this level: level = r(1.7 - 0.7r)·6, inverted.
             float perceptual = level >= 6 ? 1 : (1.7f - MathF.Sqrt(2.89f - 2.8f * level / 6)) / 1.4f;
             float alpha = perceptual * perceptual, alpha2 = alpha * alpha;
             int samples = level < 3 ? 64 : 128;
@@ -196,7 +196,7 @@ public static class EnvironmentCube
     /// probe captures. <paramref name="draw"/> is called once per face with a square multisampled HDR target and
     /// the direction to look along and its up. It binds the target and draws the scene from the point with a
     /// 90° field of view and a square aspect, in a view whose right is <c>Cross(up, forward)</c> (the left-handed
-    /// convention of <see cref="FromCross"/> and of Unity content); nothing but linear radiance may reach the
+    /// convention of <see cref="FromCross"/> and of left-handed content); nothing but linear radiance may reach the
     /// target, so no tone mapping. Each face is read back as it is drawn, which waits for the GPU: capture when a
     /// level starts, not during play.
     /// </summary>

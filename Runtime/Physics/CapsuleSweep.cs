@@ -102,7 +102,7 @@ public static class CapsuleSweep
         return distance < float.MaxValue;
     }
 
-    // Like Unity's sweep helpers, a ray starting inside the sphere reports its exit point.
+    // A ray starting inside the sphere reports its exit point.
     private static bool RaySphere(Vec3 origin, Vec3 dir, Vec3 center, float radius, out float distance, out Vec3 normal)
     {
         var oc = origin - center;

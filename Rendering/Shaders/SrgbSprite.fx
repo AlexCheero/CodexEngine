@@ -1,6 +1,6 @@
 // Unlit textured, vertex-coloured sprites authored for a display-encoded target, drawn into a linear HDR target:
-// the product texture*colour is decoded from sRGB so blending happens on linear values as in URP.
-#include "UnityLighting.hlsl"
+// the product texture*colour is decoded from sRGB so blending happens on linear values.
+#include "Lighting.hlsl"
 float4x4 WorldViewProjection;
 // Linear multiplier after decoding: HDR sprites stored as sRGB(linear/scale) are drawn with Gain=scale.
 float Gain;

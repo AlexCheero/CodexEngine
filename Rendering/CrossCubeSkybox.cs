@@ -4,10 +4,10 @@ using Microsoft.Xna.Framework.Graphics;
 namespace CodexEngine.Rendering;
 
 /// <summary>
-/// A sky drawn from a horizontal-cross cubemap (4x3 faces: -X,+Z,+X,-Z in the middle row) in Unity's world axes.
-/// <paramref name="rotation"/> is Unity's skybox _Rotation in degrees: Unity rotates the sky geometry by it.
+/// A sky drawn from a horizontal-cross cubemap (4x3 faces: -X,+Z,+X,-Z in the middle row), in a left-handed world with +Y up.
+/// <paramref name="rotation"/> turns the sky about the vertical axis, in degrees: the sky geometry is rotated by it.
 /// <paramref name="gain"/> multiplies the stored texels in the pixel shader, so values above 1 reach an HDR target;
-/// see Tools/UnityFidelity/sky.py for the encoding. <paramref name="effectPath"/> is CrossCubeSky.fxb.
+/// see the sky conversion script (sky.py) for the encoding. <paramref name="effectPath"/> is CrossCubeSky.fxb.
 /// </summary>
 public sealed class CrossCubeSkybox : IDisposable
 {
@@ -36,7 +36,7 @@ public sealed class CrossCubeSkybox : IDisposable
             vertices[n++]=Corner(0,0); vertices[n++]=Corner(1,1); vertices[n++]=Corner(0,1);
         }
     }
-    /// <summary>The draw gain for a cross stored by sky.py with Unity's linear sky multiplier m: encode(m) per channel.</summary>
+    /// <summary>The draw gain for a cross stored by sky.py with the linear sky multiplier m: encode(m) per channel.</summary>
     public static Vector3 Gain(float[] linearMultiplier)
     {
         static float Encode(float c) => c <= .0031308f ? c * 12.92f : 1.055f * MathF.Pow(c, 1 / 2.4f) - .055f;

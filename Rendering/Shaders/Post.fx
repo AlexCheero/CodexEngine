@@ -1,6 +1,6 @@
-// URP camera post-processing: bloom, chromatic aberration, vignette, HDR colour grading and tonemapping.
+// Camera post-processing: bloom, chromatic aberration, vignette, HDR colour grading and tonemapping.
 // The scene texture holds sRGB-encoded HDR radiance; passes decode it and the final pass re-encodes.
-#include "UnityLighting.hlsl"
+#include "Lighting.hlsl"
 #include "Branching.hlsl"
 texture Scene, LowTexture, GlowTexture;
 sampler2D Source = sampler_state { Texture=<Scene>; MinFilter=Linear; MagFilter=Linear; MipFilter=None; AddressU=Clamp; AddressV=Clamp; };
@@ -22,11 +22,25 @@ sampler2D ShaftSampler = sampler_state { Texture=<ShaftTexture>; MinFilter=Linea
 float4 ShaftSource;                        // the sun on screen (uv), share of the way to it one blur pass covers, width/height
 float4 ShaftLight;                         // tint times strength, then 1 when shafts are drawn
 float ShaftThreshold;                      // sky radiance below this feeds no shaft
-// Unity draws some things after post-processing, a held weapon for one: they show as lit, with no bloom, vignette,
-// exposure or grade. Such a surface marks itself with one negative alpha (UrpPostProcessing.OutsideAlpha) and
+// Some things are drawn after post-processing, a held weapon for one: they show as lit, with no bloom, vignette,
+// exposure or grade. Such a surface marks itself with one negative alpha (PostProcessing.OutsideAlpha) and
 // OutsideScale is -1 over that alpha, or 0 for a scene with none. Where a multisampled scene resolves the surface's
 // edge against the world, the share of that alpha left on the pixel blends the two treatments.
 float OutsideScale;
+// Depth of field, motion blur and adaptive exposure (PostStack). The first two read the scene's eye depth along
+// the view axis from the alpha of the surface target.
+texture DepthTexture, FocusTexture, LuminanceTexture, ExposureTexture;
+sampler2D DepthSampler = sampler_state { Texture=<DepthTexture>; MinFilter=Point; MagFilter=Point; MipFilter=None; AddressU=Clamp; AddressV=Clamp; };
+sampler2D FocusSampler = sampler_state { Texture=<FocusTexture>; MinFilter=Linear; MagFilter=Linear; MipFilter=None; AddressU=Clamp; AddressV=Clamp; };
+sampler2D LuminanceSampler = sampler_state { Texture=<LuminanceTexture>; MinFilter=Point; MagFilter=Point; MipFilter=None; AddressU=Clamp; AddressV=Clamp; };
+sampler2D ExposureSampler = sampler_state { Texture=<ExposureTexture>; MinFilter=Point; MagFilter=Point; MipFilter=None; AddressU=Clamp; AddressV=Clamp; };
+float4x4 Reproject;                        // (ndc·depth, depth, 1) of this frame to the last frame's clip space
+float4 MotionParams;                       // shutter share of the frame, longest streak (share of the height), width/height
+float4 FocusParams;                        // near blur whole up to x and gone at y, far blur from z and whole at w
+float2 FocusRadius;                        // blur radius of what is wholly out of focus, in uv
+float4 ExposureParams;                     // log2 of the key less the fixed exposure, lowest and highest EV
+float2 ExposureRates;                      // share of the way to the target in one frame: opening up, closing down
+float ExposureOn;
 
 // Explicit LOD everywhere: implicit-gradient samples inside dynamic branches read zero after translation.
 float3 Fetch(sampler2D s, float2 uv) { return tex2Dlod(s,float4(uv,0,0)).rgb; }
@@ -85,6 +99,88 @@ float4 BloomUpsample(ScreenVertex v):COLOR0 {
     return float4(lerp(high,low,BloomParams.w),1);
 }
 
+float Luma(float3 c) { return dot(c,float3(.2126729,.7151522,.0721750)); }
+// Passes that hand the scene on to the rest of the chain write it back the way it came.
+float3 SceneEncoded(float3 c) { return lerp(LinearToSrgb(c),c,SceneIsLinear); }
+float Outside(float alpha) { return saturate(alpha*OutsideScale); }
+
+// Motion blur: every pixel streaked along the path the camera's movement took it by while the shutter was open.
+// A surface outside the stack is fixed to the screen: it is not blurred and is not gathered into the blur.
+float4 MotionSmear(ScreenVertex v):COLOR0 {
+    float2 uv = v.UV;
+    float4 centre = tex2Dlod(Source,float4(uv,0,0));
+    float depth = tex2Dlod(DepthSampler,float4(uv,0,0)).a;
+    float4 before = mul(float4((uv*float2(2,-2)+float2(-1,1))*depth,depth,1),Reproject);
+    float2 path = (uv-(before.xy/max(before.w,1e-4)*float2(.5,-.5)+.5))*MotionParams.x;
+    float reach = length(path*float2(MotionParams.z,1));
+    path *= min(1,MotionParams.y/max(reach,1e-6));
+    float3 sum = 0; float total = 0;
+    [unroll] for (int i=0; i<8; i++) {
+        float4 c = tex2Dlod(Source,float4(uv+path*((i+.5)/8-.5),0,0));
+        float weight = 1-Outside(c.a);
+        sum += lerp(SrgbToLinear(c.rgb),c.rgb,SceneIsLinear)*weight; total += weight;
+    }
+    float3 lit = lerp(SrgbToLinear(centre.rgb),centre.rgb,SceneIsLinear);
+    float keep = max(Outside(centre.a),step(before.w,0));
+    return float4(SceneEncoded(lerp(sum/max(total,1e-4),lit,max(keep,step(total,0)))),centre.a);
+}
+
+// Depth of field. How far out of focus a depth is: 1 for the whole blur, 0 in focus.
+float Unfocus(float depth) {
+    float near = 1-saturate((depth-FocusParams.x)/max(FocusParams.y-FocusParams.x,1e-4));
+    float far = saturate((depth-FocusParams.z)/max(FocusParams.w-FocusParams.z,1e-4));
+    return max(near*step(1e-4,FocusParams.y),far);
+}
+// At half size: the scene, with how far out of focus it is in alpha.
+float4 FocusField(ScreenVertex v):COLOR0 {
+    float4 c = tex2Dlod(Source,float4(v.UV,0,0));
+    float blur = Unfocus(tex2Dlod(DepthSampler,float4(v.UV,0,0)).a)*(1-Outside(tex2Dlod(Source,float4(v.UV,0,0)).a));
+    return float4(lerp(SrgbToLinear(c.rgb),c.rgb,SceneIsLinear),blur);
+}
+// Sixteen samples over a disc as wide as the pixel is out of focus. Each counts by how far out of focus it is
+// itself, so what is sharp does not smear into the blur behind it.
+float4 FocusDisc(ScreenVertex v):COLOR0 {
+    float4 centre = tex2Dlod(Source,float4(v.UV,0,0));
+    float3 sum = centre.rgb*.0625; float total = .0625;
+    [unroll] for (int i=0; i<16; i++) {
+        float angle = i*2.39996323, distance = sqrt((i+.5)/16);
+        float4 c = tex2Dlod(Source,float4(v.UV+float2(cos(angle),sin(angle))*distance*centre.a*FocusRadius,0,0));
+        sum += c.rgb*c.a; total += c.a;
+    }
+    return float4(sum/total,centre.a);
+}
+float4 FocusBlend(ScreenVertex v):COLOR0 {
+    float4 c = tex2Dlod(Source,float4(v.UV,0,0));
+    float4 soft = tex2Dlod(FocusSampler,float4(v.UV,0,0));
+    float blur = max(Unfocus(tex2Dlod(DepthSampler,float4(v.UV,0,0)).a),soft.a)*(1-Outside(c.a));
+    float3 lit = lerp(SrgbToLinear(c.rgb),c.rgb,SceneIsLinear);
+    return float4(SceneEncoded(lerp(lit,soft.rgb,smoothstep(0,1,saturate(blur*2)))),c.a);
+}
+
+// Adaptive exposure. At a quarter of the size: log luminance, each of the four samples averaging four texels.
+// Average then takes a quarter of that again, pass after pass, down to one texel: the log of the frame's geometric mean.
+float4 LogLuminance(ScreenVertex v):COLOR0 {
+    float sum = 0;
+    [unroll] for (int j=0; j<2; j++)
+        [unroll] for (int i=0; i<2; i++)
+            sum += Luma(SceneLinear(v.UV+SourceSize.xy*(float2(i,j)*2-1)));
+    return log2(max(sum*.25,1e-4));
+}
+float4 AverageDown(ScreenVertex v):COLOR0 {
+    float sum = 0;
+    [unroll] for (int j=0; j<2; j++)
+        [unroll] for (int i=0; i<2; i++)
+            sum += tex2Dlod(Source,float4(v.UV+SourceSize.xy*(float2(i,j)*2-1),0,0)).r;
+    return sum*.25;
+}
+// One texel: last frame's exposure moved toward what brings that mean to the key.
+float4 AdaptExposure(ScreenVertex v):COLOR0 {
+    float mean = tex2Dlod(LuminanceSampler,float4(.5,.5,0,0)).r;
+    float target = clamp(ExposureParams.x-mean,ExposureParams.y,ExposureParams.z);
+    float last = tex2Dlod(Source,float4(.5,.5,0,0)).r;
+    return lerp(last,target,target > last ? ExposureRates.x : ExposureRates.y);
+}
+
 // Light shafts, first pass: keep the sky around the sun, at a quarter of the size. The scene's alpha is 1 where
 // nothing was drawn over the sky, and each of the four samples averages four texels.
 float4 ShaftSky(ScreenVertex v):COLOR0 {
@@ -117,8 +213,7 @@ float3 NeutralCurve(float3 x) { return (x*(.2*x+.24*.29)+.272*.02)/(x*(.2*x+.29)
 float3 Neutral(float3 x) { float white = 1/NeutralCurve(5.3).x; return NeutralCurve(x*white)*white; }
 // Narkowicz fit of the ACES reference rendering transform.
 float3 Aces(float3 x) { x *= .6; return saturate(x*(2.51*x+.03)/(x*(2.43*x+.59)+.14)); }
-float Luma(float3 c) { return dot(c,float3(.2126729,.7151522,.0721750)); }
-// LutBuilderHdr.ColorGrade followed by the tonemapper.
+// Colour grading in HDR, followed by the tonemapper.
 float3 GradeColor(float3 c) {
     c = mul(LMSToLin,mul(LinToLMS,c)*GradeBalance);
     c = FromLogC((ToLogC(c)-.4135884)*GradeParams.y+.4135884);
@@ -134,7 +229,7 @@ float3 GradeColor(float3 c) {
 }
 // Interleaved gradient noise: even across a neighbourhood, so it reads as grain rather than a pattern.
 float Noise(float2 pixel) { return frac(52.9829189*frac(dot(pixel,float2(.06711056,.00583715)))); }
-// UberPost: chromatic aberration, bloom, vignette, then grading at post exposure.
+// The final composite: chromatic aberration, bloom, vignette, then grading at post exposure.
 float4 Uber(ScreenVertex v):COLOR0 {
     float2 uv = v.UV; float3 c;
     float4 scene = tex2Dlod(Source,float4(uv,0,0));
@@ -147,7 +242,8 @@ float4 Uber(ScreenVertex v):COLOR0 {
     [branch] if (PER_PIXEL(ShaftLight.w>0,uv.x)) c += Fetch(ShaftSampler,uv)*ShaftLight.rgb;
     float2 d = abs(uv-VignetteParams.xy)*VignetteParams.z; d.x *= VignetteColor.w;
     c *= lerp(VignetteColor.rgb,1,pow(saturate(1-dot(d,d)),VignetteParams.w));
-    float3 encoded = LinearToSrgb(GradeColor(c*GradeParams.x));
+    float exposure = GradeParams.x*exp2(tex2Dlod(ExposureSampler,float4(.5,.5,0,0)).r*ExposureOn);
+    float3 encoded = LinearToSrgb(GradeColor(c*exposure));
     encoded = lerp(encoded,LinearToSrgb(saturate(lit)),saturate(scene.a*OutsideScale));
     // Triangular noise of one display step hides the bands an 8-bit target cuts into smooth gradients.
     float2 pixel = uv*SourceSize.zw;
@@ -199,3 +295,5 @@ float4 SmoothEdges(ScreenVertex v):COLOR0 {
 #define PASS(NAME,PS) technique NAME { pass P0 { VertexShader=compile vs_3_0 Project(); PixelShader=compile ps_3_0 PS(); } }
 PASS(Prefilter,BloomPrefilter) PASS(BlurH,BloomBlurH) PASS(BlurV,BloomBlurV) PASS(Upsample,BloomUpsample) PASS(Composite,Uber)
 PASS(Smooth,SmoothEdges) PASS(ShaftMask,ShaftSky) PASS(ShaftBlur,ShaftSmear)
+PASS(MotionBlur,MotionSmear) PASS(FocusPrefilter,FocusField) PASS(FocusBlur,FocusDisc) PASS(FocusComposite,FocusBlend)
+PASS(Luminance,LogLuminance) PASS(Average,AverageDown) PASS(Adapt,AdaptExposure)

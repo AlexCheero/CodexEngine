@@ -22,7 +22,7 @@ public sealed record Atmosphere
     public float[] SunColour { get; init; } = [1, 1, 1];
     /// <summary>How tight the glow is around the sun. Higher is tighter.</summary>
     public float SunExponent { get; init; } = 8;
-    /// <summary>Strength of light shafts from the sun (<see cref="UrpPostProcessing.Shafts"/>), as a scale on the sky's radiance. 0 for none.</summary>
+    /// <summary>Strength of light shafts from the sun (<see cref="PostProcessing.Shafts"/>), as a scale on the sky's radiance. 0 for none.</summary>
     public float ShaftStrength { get; init; }
     /// <summary>How far toward the sun a shaft gathers its light, as a share of the distance on screen.</summary>
     public float ShaftReach { get; init; } = .7f;

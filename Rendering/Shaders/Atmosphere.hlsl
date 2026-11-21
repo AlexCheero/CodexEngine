@@ -2,7 +2,7 @@
 #define CODEX_ATMOSPHERE
 // Fog that thins with height, takes part of its colour from the sky behind it and brightens toward the sun.
 // CodexEngine.Rendering.Atmosphere binds the settings. With every one at zero the fog is the caller's flat one.
-#include "UnityLighting.hlsl"
+#include "Lighting.hlsl"
 float4 FogShape;  // height falloff per unit, height at which the density is the authored one, share of sky colour, sun scatter
 float4 FogSun;    // scatter radiance (linear), lobe exponent
 // The sky's colour along +X,-X,+Y,-Y,+Z,-Z with no detail left, linear (EnvironmentCube.Axes). The fog keeps its

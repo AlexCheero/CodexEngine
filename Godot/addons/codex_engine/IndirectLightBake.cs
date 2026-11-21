@@ -111,7 +111,7 @@ public static class IndirectLightBake
         }
     }
 
-    // Light is linear radiance. The sky's colour runs from the horizon to the zenith, like Unity's three-colour ambient.
+    // Light is linear radiance. The sky's colour runs from the horizon to the zenith: a three-colour ambient.
     sealed class Solver(LightBakeScene scene,Vector3 sun,Vector3 sunColor,Vector3 sky,Vector3 horizon)
     {
         static readonly Vector3[] Hemisphere=CosineDirections(SurfaceRays);
