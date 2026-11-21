@@ -74,7 +74,7 @@ public sealed class ClusteredLights : IDisposable
     readonly Seen[] seen;
     readonly int[] seenSource;
     readonly int[] shadowSlots;
-    int gatheredCount, seenCount;
+    int gatheredCount, seenCount, crowded;
     Matrix viewProjection = Matrix.Identity;
 
     /// <summary>
@@ -86,6 +86,23 @@ public sealed class ClusteredLights : IDisposable
 
     /// <summary>Lights in the view the last <see cref="Build"/> sorted.</summary>
     public int Visible => seenCount;
+
+    /// <summary>
+    /// How many times the last <see cref="Build"/> had a light reach a cluster that was already full and had to
+    /// leave one out. Zero means every pixel is lit by every light that reaches it. A level that keeps this above
+    /// zero has more lights overlapping in one place than a cluster lists: shorten their ranges or thin them out.
+    /// </summary>
+    public int Crowded => crowded;
+
+    /// <summary>
+    /// Leaves the clusters empty, for a view that no light should reach: a menu's preview, a view drawn before the
+    /// frame's lights are known. <see cref="Bind"/> then binds nothing lit.
+    /// </summary>
+    public void BuildEmpty()
+    {
+        seenCount = 0;
+        crowded = 0;
+    }
 
     /// <param name="capacity">The most lights one view can hold. Past it the view keeps the nearest for their range.</param>
     /// <param name="perCluster">The most lights one cluster lists, up to <see cref="MaxPerCluster"/>.</param>
@@ -205,6 +222,7 @@ public sealed class ClusteredLights : IDisposable
             table[slot + 2] = new Vector4(g.Direction, g.OuterCos);
             table[slot + 3] = new Vector4(g.ConeScale, shadowSlots[i] = -1, 0, 0);
         }
+        crowded = 0;
         if (seenCount == 0) return;
         if (jobs != null) jobs.Run(Slices, 1, sort);
         else Sort(0, Slices);
@@ -276,6 +294,7 @@ public sealed class ClusteredLights : IDisposable
         var lists = MemoryMarshal.Cast<Vector4, float>(texels.AsSpan(0, ListRows * Width));
         lists.Slice(first * Rows * Width * 4, (end - first) * Rows * Width * 4).Clear();
         counts.AsSpan(first * Rows * Columns * 2, (end - first) * Rows * Columns * 2).Clear();
+        int left = 0;
         // The lights outside the baked lighting come first in every list, so they are sorted first.
         for (int baked = 0; baked < 2; baked++)
         for (int i = 0; i < seenCount; i++)
@@ -309,17 +328,19 @@ public sealed class ClusteredLights : IDisposable
                     {
                         // Where a cluster has more lights than it can list, it keeps those it sits deepest inside.
                         float cx = .5f * (columnSlope[x] + columnSlope[x + 1]) * middle - s.At.X;
-                        Insert(lists, cluster, number, (cx * cx + cyz) * s.InverseRangeSquared);
+                        if (!Insert(lists, cluster, number, (cx * cx + cyz) * s.InverseRangeSquared)) left++;
                     }
                 }
             }
         }
+        if (left != 0) Interlocked.Add(ref crowded, left);
     }
 
     // A cluster's list is sixteen floats in a row: light numbers from 1, the baked ones negative and last, and a
     // zero after the last. A full list gives up its worst light for a better one, but never an unbaked light for a
     // baked one: the unbaked lights are the ones every surface needs.
-    void Insert(Span<float> lists, int cluster, float number, float score)
+    // False when a light had to be left out: the new one, or the one it took the place of.
+    bool Insert(Span<float> lists, int cluster, float number, float score)
     {
         int count = counts[cluster * 2], unbaked = counts[cluster * 2 + 1], start = cluster * ClusterFloats;
         int from = number > 0 ? 0 : unbaked;
@@ -329,14 +350,15 @@ public sealed class ClusteredLights : IDisposable
             scores[start + count] = score;
             counts[cluster * 2] = (byte)(count + 1);
             if (number > 0) counts[cluster * 2 + 1] = (byte)(unbaked + 1);
-            return;
+            return true;
         }
         int worst = -1; float worstScore = score;
         for (int i = from; i < count; i++)
             if (scores[start + i] > worstScore) { worstScore = scores[start + i]; worst = i; }
-        if (worst < 0) return;
+        if (worst < 0) return false;
         lists[start + worst] = number;
         scores[start + worst] = score;
+        return false;
     }
 
     /// <summary>
