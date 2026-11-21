@@ -19,6 +19,9 @@ namespace CodexECS
             public EcsSystem System { get; }
             public bool Active { get; set; }
             public bool NonPausable { get; set; }
+            /// <summary>Stopwatch ticks spent in Tick and how often it ran, while the pipeline's Profile is on.</summary>
+            public long ProfiledTicks { get; internal set; }
+            public int ProfiledRuns { get; internal set; }
             public IReadOnlyList<EcsFilter> Filters => _filters;
 
             internal Registration(EcsSystem system, bool active, bool nonPausable, EcsFilter[] filters)
@@ -106,6 +109,9 @@ namespace CodexECS
 
         public EcsWorld World { get; }
         public bool IsPaused { get; private set; }
+        /// <summary>Accumulates each system's tick time in its registration.</summary>
+        public bool Profile { get; set; }
+        public IReadOnlyList<Registration> Registrations => _registrations;
 #if PERFORMANCE_BENCHMARK
         public Action<TGroup, EcsSystem, long> SystemTicked;
 #endif
@@ -226,39 +232,80 @@ namespace CodexECS
         /// <summary>
         /// Ticks runnable systems in registration order. A paused pipeline only ticks
         /// non-pausable systems unless force is true.
+        /// A system that declares no component access is a sync point: every job is finished and every
+        /// command buffer played back before it is considered. A declaring system receives the unfinished
+        /// jobs that conflict with it as its Dependency and may leave jobs running. The group ends with a
+        /// sync point, so nothing runs across groups.
         /// </summary>
         public void Tick(TGroup group, bool force = false)
         {
             ThrowIfDisposed();
             var state = GetGroup(group);
+            var world = World;
 
-            for (int i = 0; i < state.Registrations.Count; i++)
+            try
             {
-                var registration = state.Registrations[i];
-                if (!registration.Active || (IsPaused && !force && !registration.NonPausable))
-                    continue;
-                if (!state.Graph.ShouldRun(i))
-                    continue;
+                for (int i = 0; i < state.Registrations.Count; i++)
+                {
+                    var registration = state.Registrations[i];
+                    if (!registration.Active || (IsPaused && !force && !registration.NonPausable))
+                        continue;
+                    var system = registration.System;
+                    var access = system.Access;
+                    // Pending commands can change which filters match, so an exclusive system is gated after them.
+                    if (access == null && world.NeedsSync)
+                        world.Sync();
+                    if (!state.Graph.ShouldRun(i))
+                        continue;
+                    if (access != null && world.Jobs != null)
+                        system.Dependency = world.Dependencies.Get(access);
 
+                    var started = Profile ? System.Diagnostics.Stopwatch.GetTimestamp() : 0L;
 #if PERFORMANCE_BENCHMARK
-                var benchmarkStart = SystemTicked != null ? System.Diagnostics.Stopwatch.GetTimestamp() : 0L;
+                    var benchmarkStart = SystemTicked != null ? System.Diagnostics.Stopwatch.GetTimestamp() : 0L;
 #endif
-                World.Lock();
-                try
-                {
-                    registration.System.Tick(World);
-                }
-                finally
-                {
-                    // Unlock is the reactive flush boundary between systems. Filter
-                    // emptiness changes raised during the flush dirty the graph before
-                    // the next registration is considered.
-                    World.Unlock();
+                    world.Lock();
+                    try
+                    {
+                        system.Tick(world);
+                    }
+                    finally
+                    {
+                        // Unlock is the reactive flush boundary between systems. Filter
+                        // emptiness changes raised during the flush dirty the graph before
+                        // the next registration is considered.
+                        world.Unlock();
+                        if (access != null)
+                        {
+                            if (world.Jobs != null)
+                                world.Dependencies.Add(access, system.Dependency);
+                            system.Dependency = default;
+                        }
+                        if (Profile)
+                        {
+                            registration.ProfiledTicks += System.Diagnostics.Stopwatch.GetTimestamp() - started;
+                            registration.ProfiledRuns++;
+                        }
 #if PERFORMANCE_BENCHMARK
-                    SystemTicked?.Invoke(group, registration.System,
-                        System.Diagnostics.Stopwatch.GetTimestamp() - benchmarkStart);
+                        SystemTicked?.Invoke(group, registration.System,
+                            System.Diagnostics.Stopwatch.GetTimestamp() - benchmarkStart);
 #endif
+                    }
                 }
+            }
+            finally
+            {
+                if (world.NeedsSync)
+                    world.Sync();
+            }
+        }
+
+        public void ResetProfile()
+        {
+            for (int i = 0; i < _registrations.Count; i++)
+            {
+                _registrations[i].ProfiledTicks = 0;
+                _registrations[i].ProfiledRuns = 0;
             }
         }
 
