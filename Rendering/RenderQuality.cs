@@ -39,6 +39,21 @@ public sealed record RenderQuality
     public int ShadowFilter { get; init; } = 2;
     /// <summary>Light shafts from the sun, where the level asks for them (<see cref="PostProcessing.Shafts"/>).</summary>
     public bool LightShafts { get; init; }
+    /// <summary>
+    /// Leaves out what stands wholly behind the view's largest solid things (<see cref="OcclusionBuffer"/>). It
+    /// costs the job threads a small image each frame and saves the draws of whatever that image hides. Measured
+    /// on levels whose scenery is cheap to draw, the image cost more (0.5 to 1.1 ms) than the up to a quarter of
+    /// the scenery it hid saved, so no stock tier takes it: it is for views that hide much that is costly.
+    /// </summary>
+    public bool OcclusionCulling { get; init; }
+    /// <summary>
+    /// Draws what is small on screen from a coarser index list of its own vertices (<c>MeshSimplifier</c>), each
+    /// level taking over where its error falls under half a pixel. Measured on levels of 0.2 to 0.3 million
+    /// source triangles it drew 5 to 20% fewer triangles with no visible change, added 0.2 to 0.6 s to loading and
+    /// moved the frame time by less than the noise on an RTX 3060 Laptop, so no stock tier takes it: it is for
+    /// content dense enough in triangles for the vertex stage to count.
+    /// </summary>
+    public bool DetailLevels { get; init; }
     /// <summary>Local lights that hold a real-time shadow map at once (<see cref="LocalShadowAtlas"/>). 0 for none.</summary>
     public int LocalShadows { get; init; }
     /// <summary>Texels along one side of a local light's shadow tile.</summary>
