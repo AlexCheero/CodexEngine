@@ -66,9 +66,10 @@ struct ShadedSurface {
 
 // `fromEye` is the surface position relative to the eye and `colour` its display-encoded base colour.
 // `added` is light the caller brings itself, and `occlusion` scales the ambient part (1 leaves it whole).
+// `metallic` is the surface's metalness at this texel, for an effect that reads it from a map.
 // Call this before any branch of the pixel shader: it samples with screen-space derivatives, and when a branch
 // came first the sun's shadow lookup shadowed flat ground against itself.
-SurfaceLight GatherLight(float3 fromEye,float3 n,float3 colour,float2 lightUV,float shadowReceiver,float3 added,float occlusion) {
+SurfaceLight GatherLight(float3 fromEye,float3 n,float3 colour,float2 lightUV,float shadowReceiver,float3 added,float occlusion,float metallic) {
     float4 lm=tex2D(LightmapSampler,lightUV), mask=tex2D(MaskSampler,lightUV), lightDirection=tex2D(LightDirectionSampler,lightUV);
     // The sun lookup takes screen-space derivatives, so it runs before the first branch.
     float sunLit=SunVisibility(fromEye+Eye,n);
@@ -82,7 +83,7 @@ SurfaceLight GatherLight(float3 fromEye,float3 n,float3 colour,float2 lightUV,fl
     s.ambient=s.light;
     s.view=-normalize(fromEye);
     s.albedo=SrgbToLinear(colour);
-    s.brdf=UrpBrdfMetallic(s.albedo,SurfaceBrdf.y,SurfaceBrdf.x);
+    s.brdf=UrpBrdfMetallic(s.albedo,metallic,SurfaceBrdf.x);
     s.specular=0;
     float3 sunRadiance=SunColor*saturate(dot(n,SunDirection))*(1-HasBake*SunBaked)
           *min(1-HasBake*dot(1-mask,SunMask),lerp(1,sunLit,shadowReceiver*SunShadowStrength));
@@ -122,6 +123,10 @@ SurfaceLight GatherLight(float3 fromEye,float3 n,float3 colour,float2 lightUV,fl
     s.light-=s.ambient*(1-occlusion);
     s.ambient*=occlusion;
     return s;
+}
+// The same with the surface's own metalness (SurfaceBrdf.y) on every texel.
+SurfaceLight GatherLight(float3 fromEye,float3 n,float3 colour,float2 lightUV,float shadowReceiver,float3 added,float occlusion) {
+    return GatherLight(fromEye,n,colour,lightUV,shadowReceiver,added,occlusion,SurfaceBrdf.y);
 }
 
 // `viewDepth` is the eye depth along the view axis (clip w), which is what URP's fog reads.

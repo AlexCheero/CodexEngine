@@ -22,20 +22,30 @@ sampler2D ShaftSampler = sampler_state { Texture=<ShaftTexture>; MinFilter=Linea
 float4 ShaftSource;                        // the sun on screen (uv), share of the way to it one blur pass covers, width/height
 float4 ShaftLight;                         // tint times strength, then 1 when shafts are drawn
 float ShaftThreshold;                      // sky radiance below this feeds no shaft
+// Unity draws some things after post-processing, a held weapon for one: they show as lit, with no bloom, vignette,
+// exposure or grade. Such a surface marks itself with one negative alpha (UrpPostProcessing.OutsideAlpha) and
+// OutsideScale is -1 over that alpha, or 0 for a scene with none. Where a multisampled scene resolves the surface's
+// edge against the world, the share of that alpha left on the pixel blends the two treatments.
+float OutsideScale;
 
 // Explicit LOD everywhere: implicit-gradient samples inside dynamic branches read zero after translation.
 float3 Fetch(sampler2D s, float2 uv) { return tex2Dlod(s,float4(uv,0,0)).rgb; }
 struct ScreenVertex { float4 Position:POSITION0; float2 UV:TEXCOORD0; };
 ScreenVertex Project(float4 position:POSITION0, float2 uv:TEXCOORD0) { ScreenVertex v; v.Position=position; v.UV=uv; return v; }
 float3 SceneLinear(float2 uv) { float3 c = Fetch(Source,uv); return lerp(SrgbToLinear(c),c,SceneIsLinear); }
+// The scene without what stands outside the stack, which casts no bloom.
+float3 Graded(float2 uv) {
+    float4 c = tex2Dlod(Source,float4(uv,0,0));
+    return lerp(SrgbToLinear(c.rgb),c.rgb,SceneIsLinear)*(1-saturate(c.a*OutsideScale));
+}
 
 float4 BloomPrefilter(ScreenVertex v):COLOR0 {
     float t = SourceSize.x; float2 uv = v.UV;
-    float3 A=SceneLinear(uv+t*float2(-1,-1)), B=SceneLinear(uv+t*float2(0,-1)), C=SceneLinear(uv+t*float2(1,-1));
-    float3 D=SceneLinear(uv+t*float2(-.5,-.5)), E=SceneLinear(uv+t*float2(.5,-.5));
-    float3 F=SceneLinear(uv+t*float2(-1,0)), G=SceneLinear(uv), H=SceneLinear(uv+t*float2(1,0));
-    float3 I=SceneLinear(uv+t*float2(-.5,.5)), J=SceneLinear(uv+t*float2(.5,.5));
-    float3 K=SceneLinear(uv+t*float2(-1,1)), L=SceneLinear(uv+t*float2(0,1)), M=SceneLinear(uv+t*float2(1,1));
+    float3 A=Graded(uv+t*float2(-1,-1)), B=Graded(uv+t*float2(0,-1)), C=Graded(uv+t*float2(1,-1));
+    float3 D=Graded(uv+t*float2(-.5,-.5)), E=Graded(uv+t*float2(.5,-.5));
+    float3 F=Graded(uv+t*float2(-1,0)), G=Graded(uv), H=Graded(uv+t*float2(1,0));
+    float3 I=Graded(uv+t*float2(-.5,.5)), J=Graded(uv+t*float2(.5,.5));
+    float3 K=Graded(uv+t*float2(-1,1)), L=Graded(uv+t*float2(0,1)), M=Graded(uv+t*float2(1,1));
     float3 c = BloomComposite.w>0 ? (D+E+I+J)*.125+((A+B+G+F)+(B+C+H+G)+(F+G+L+K)+(G+H+M+L))*.03125 : G;
     c = min(BloomParams.z,c);
     float brightness = max(c.r,max(c.g,c.b));
@@ -127,15 +137,18 @@ float Noise(float2 pixel) { return frac(52.9829189*frac(dot(pixel,float2(.067110
 // UberPost: chromatic aberration, bloom, vignette, then grading at post exposure.
 float4 Uber(ScreenVertex v):COLOR0 {
     float2 uv = v.UV; float3 c;
+    float4 scene = tex2Dlod(Source,float4(uv,0,0));
+    float3 lit = lerp(SrgbToLinear(scene.rgb),scene.rgb,SceneIsLinear);
     if (ChromaAmount>0) {
         float2 coords = 2*uv-1; float2 delta = (-coords*dot(coords,coords)*ChromaAmount)/3;
-        c = float3(SceneLinear(uv).r,SceneLinear(uv+delta).g,SceneLinear(uv+2*delta).b);
-    } else c = SceneLinear(uv);
+        c = float3(lit.r,SceneLinear(uv+delta).g,SceneLinear(uv+2*delta).b);
+    } else c = lit;
     c += (BloomComposite.w>0?Bicubic(GlowSampler,uv,LowSize):Fetch(GlowSampler,uv))*BloomComposite.rgb;
     [branch] if (PER_PIXEL(ShaftLight.w>0,uv.x)) c += Fetch(ShaftSampler,uv)*ShaftLight.rgb;
     float2 d = abs(uv-VignetteParams.xy)*VignetteParams.z; d.x *= VignetteColor.w;
     c *= lerp(VignetteColor.rgb,1,pow(saturate(1-dot(d,d)),VignetteParams.w));
     float3 encoded = LinearToSrgb(GradeColor(c*GradeParams.x));
+    encoded = lerp(encoded,LinearToSrgb(saturate(lit)),saturate(scene.a*OutsideScale));
     // Triangular noise of one display step hides the bands an 8-bit target cuts into smooth gradients.
     float2 pixel = uv*SourceSize.zw;
     encoded += (Noise(pixel)+Noise(pixel+float2(47.0,17.0))-1)*Output.x;

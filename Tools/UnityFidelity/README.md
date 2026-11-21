@@ -22,7 +22,7 @@ Per scene it writes:
 | `.png` | URP frame at the requested quality level |
 | `.post.json` | blended volume stack (load as `UrpVolumeStack`) |
 | `.ambient.json` | ambient probe on ±X, ±Y, ±Z (`AmbientCubeAt` in `UnityLighting.hlsl`) |
-| `.lights.txt` | lights, shadow strength, ambient and reflection settings, terrains, reflection probes |
+| `.lights.txt` | lights, shadow strength, ambient and reflection settings, terrains, reflection probes, how many light probes the baked shadows leave lit, and the interpolated probe and its occlusion at each of the scene's `probeAt` points (`"probeAt":[x,y,z, ...]` in the config) |
 | `.surfaces.json` | per mesh/material-key URP Lit smoothness, metallic (gloss maps averaged), reflection flags |
 | `.lightmaps.txt` | lightmap formats and mean decoded values |
 | `.probe.txt` | renderer and material under a 3×4 screen grid |

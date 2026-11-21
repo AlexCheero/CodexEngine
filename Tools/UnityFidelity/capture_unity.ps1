@@ -1,6 +1,8 @@
 # Renders Unity reference frames for the camera poses a native port captured, and dumps scene data.
 # Installs UnityReference.cs.txt into <Source>/Assets/Editor/CodexFidelity for the run and removes it afterwards.
 #   -Config  JSON: {"quality":3,"scenes":[{"name":"Level","scene":"Assets/..unity","additive":[],"cameraPrefab":"Assets/..prefab"}]}
+#            A scene's optional "probeAt":[x,y,z, x,y,z, ...] adds the interpolated light probe and probe occlusion at
+#            those points to its .lights.txt: what a moving object standing there receives.
 #   -Poses   folder with <name>.png.camera.json files: {"eye":[x,y,z],"forward":[..],"up":[..],"fov":deg,"width":w,"height":h}
 #   -Out     folder for <name>[.<experiment>].png, .post.json (URP volume stack), .lights.txt, .ambient.json,
 #            .surfaces.json (per-mesh URP Lit parameters), .lightmaps.txt, .probe.txt and, where the scene has baked

@@ -12,11 +12,15 @@ public sealed record RenderQuality
     public int MultiSampleCount { get; init; }
     /// <summary>
     /// Smooths edges in the finished image (<see cref="UrpPostProcessing.EdgeSmoothing"/>). It reaches what
-    /// multisampling cannot: alpha cutouts, dithered fades and shading detail.
+    /// multisampling cannot (alpha cutouts, dithered fades, shading detail) and softens texture detail with them:
+    /// measured on a wall of wood and stone, a tenth of its local contrast. So a tier takes it instead of
+    /// multisampling, not on top.
     /// </summary>
     public bool EdgeSmoothing { get; init; }
     /// <summary>Texture samples along the long axis of a pixel's footprint. 1 is plain trilinear filtering.</summary>
     public int Anisotropy { get; init; } = 1;
+    /// <summary>The longest side a surface map is uploaded with. A larger map leaves its finest levels on disk.</summary>
+    public int TextureSize { get; init; } = 4096;
     public bool AmbientOcclusion { get; init; }
     /// <summary>Texels along one side of a sun shadow cascade.</summary>
     public int ShadowResolution { get; init; } = 1024;
@@ -31,22 +35,25 @@ public sealed record RenderQuality
     // 2× about 1 ms (more where foliage is dense), three shadow cascades over one 0.5 to 1.6 ms (more where the
     // sun is real-time for the whole level), ambient occlusion 0.5 to 1 ms, the 16-comparison shadow filter over
     // the 4-comparison one 0.1 to 0.5 ms and light shafts 0.1 to 0.3 ms. Edge smoothing and 16× anisotropy each
-    // cost under 0.1 ms, so every tier that draws textures at all has them.
+    // cost under 0.1 ms.
     public static readonly RenderQuality Ultra = new()
     {
-        MultiSampleCount = 4, EdgeSmoothing = true, Anisotropy = 16, AmbientOcclusion = true,
+        MultiSampleCount = 4, Anisotropy = 16, AmbientOcclusion = true,
         ShadowResolution = 2048, ShadowCascades = 3, ShadowFilter = 4, LightShafts = true
     };
     public static readonly RenderQuality High = new()
     {
-        MultiSampleCount = 2, EdgeSmoothing = true, Anisotropy = 16, AmbientOcclusion = true,
+        MultiSampleCount = 2, Anisotropy = 16, AmbientOcclusion = true,
         ShadowResolution = 1536, ShadowCascades = 3, ShadowFilter = 4, LightShafts = true
     };
     public static readonly RenderQuality Medium = new()
     {
         EdgeSmoothing = true, Anisotropy = 16, ShadowResolution = 1024, ShadowCascades = 2, ShadowFilter = 3, LightShafts = true
     };
-    public static readonly RenderQuality Low = new() { Anisotropy = 4, ShadowResolution = 1536, ShadowCascades = 1, ShadowFilter = 2 };
+    public static readonly RenderQuality Low = new()
+    {
+        Anisotropy = 4, TextureSize = 1024, ShadowResolution = 1536, ShadowCascades = 1, ShadowFilter = 2
+    };
 
     /// <summary>Tiers in menu order: 0 Ultra, 1 High, 2 Medium, anything else Low.</summary>
     public static RenderQuality Tier(int index) => index switch { 0 => Ultra, 1 => High, 2 => Medium, _ => Low };

@@ -14,7 +14,9 @@ using UnityEngine.Rendering.Universal;
 
 public static class CodexFidelityCapture
 {
-    [Serializable] public class SceneEntry { public string name, scene; public string[] additive = new string[0]; public string cameraPrefab; public bool forceCameraPrefab; }
+    // probeAt: x,y,z triples whose interpolated light probe and probe occlusion go to .lights.txt, to check what a
+    // moving object receives at a given spot.
+    [Serializable] public class SceneEntry { public string name, scene; public string[] additive = new string[0]; public string cameraPrefab; public bool forceCameraPrefab; public float[] probeAt = new float[0]; }
     [Serializable] public class Config { public SceneEntry[] scenes = new SceneEntry[0]; public int quality = -1; }
     static string Env(string key) => Environment.GetEnvironmentVariable("CODEX_FIDELITY_" + key);
     static string experiment = "";
@@ -312,15 +314,30 @@ public static class CodexFidelityCapture
         lights.Add($"lightProbes={(LightmapSettings.lightProbes?LightmapSettings.lightProbes.count:0)}");
         // <level>.lightprobes: the baked light probes, for CodexEngine.Rendering.IrradianceProbes.Read. After the tag and the
         // count, each probe is its position and its irradiance on the six axes (+X,-X,+Y,-Y,+Z,-Z): 3 + 18 floats.
+        // .lights.txt also gets the probes' occlusion (how much of each mixed light reaches them past the static
+        // casters, by shadowmask channel) as a summary, and the interpolated probe at each of the scene's probeAt points.
         if(LightmapSettings.lightProbes && LightmapSettings.lightProbes.count>0){
             var positions=LightmapSettings.lightProbes.positions;var baked=LightmapSettings.lightProbes.bakedProbes;
             var axes=new[]{Vector3.right,Vector3.left,Vector3.up,Vector3.down,Vector3.forward,Vector3.back};var cube=new Color[6];
+            var interpolated=new System.Collections.Generic.List<SphericalHarmonicsL2>();var occlusion=new System.Collections.Generic.List<Vector4>();
+            LightProbes.CalculateInterpolatedLightAndOcclusionProbes(new System.Collections.Generic.List<Vector3>(positions),interpolated,occlusion);
             using(var probeFile=new BinaryWriter(File.Create(Path.Combine(Path.GetDirectoryName(path),level+".lightprobes")))){
                 probeFile.Write(0x42504C43);probeFile.Write(positions.Length);
                 for(int probe=0;probe<positions.Length;probe++){
                     probeFile.Write(positions[probe].x);probeFile.Write(positions[probe].y);probeFile.Write(positions[probe].z);
                     baked[probe].Evaluate(axes,cube);
                     foreach(var lobe in cube){probeFile.Write(lobe.r);probeFile.Write(lobe.g);probeFile.Write(lobe.b);}
+                }
+            }
+            lights.Add($"lightProbeOcclusion mean=({F(occlusion.Average(o=>o.x))},{F(occlusion.Average(o=>o.y))},{F(occlusion.Average(o=>o.z))},{F(occlusion.Average(o=>o.w))}) lit={occlusion.Count(o=>o.x>.5f)} of {occlusion.Count}");
+            if(entry.probeAt.Length>=3){
+                var at=new System.Collections.Generic.List<Vector3>();
+                for(int i=0;i+2<entry.probeAt.Length;i+=3)at.Add(new Vector3(entry.probeAt[i],entry.probeAt[i+1],entry.probeAt[i+2]));
+                var light=new System.Collections.Generic.List<SphericalHarmonicsL2>();var shade=new System.Collections.Generic.List<Vector4>();
+                LightProbes.CalculateInterpolatedLightAndOcclusionProbes(at,light,shade);
+                for(int i=0;i<at.Count;i++){
+                    light[i].Evaluate(axes,cube);
+                    lights.Add($"probeAt ({F(at[i].x)},{F(at[i].y)},{F(at[i].z)}) up=({F(cube[2].r)},{F(cube[2].g)},{F(cube[2].b)}) down=({F(cube[3].r)},{F(cube[3].g)},{F(cube[3].b)}) side=({F(cube[0].r)},{F(cube[0].g)},{F(cube[0].b)}) occlusion=({F(shade[i].x)},{F(shade[i].y)},{F(shade[i].z)},{F(shade[i].w)})");
                 }
             }
         }

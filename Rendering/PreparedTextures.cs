@@ -27,11 +27,16 @@ public sealed class PreparedTexture
     /// <summary>The full chain, largest first.</summary>
     public byte[][] Levels { get; init; }
 
-    /// <summary>Uploads every level. Call on the thread that owns the device.</summary>
-    public Texture2D Create(GraphicsDevice gpu)
+    /// <summary>
+    /// Uploads the levels no longer than <paramref name="maxSize"/> on their longest side, and always the last one.
+    /// Call on the thread that owns the device.
+    /// </summary>
+    public Texture2D Create(GraphicsDevice gpu, int maxSize = int.MaxValue)
     {
-        var texture = new Texture2D(gpu, Width, Height, Levels.Length > 1, Format);
-        try { for (int i = 0; i < Levels.Length; i++) texture.SetData(i, null, Levels[i], 0, Levels[i].Length); }
+        int first = 0;
+        while (first < Levels.Length - 1 && Math.Max(Width, Height) >> first > maxSize) first++;
+        var texture = new Texture2D(gpu, Math.Max(1, Width >> first), Math.Max(1, Height >> first), Levels.Length - first > 1, Format);
+        try { for (int i = first; i < Levels.Length; i++) texture.SetData(i - first, null, Levels[i], 0, Levels[i].Length); }
         catch { texture.Dispose(); throw; }
         return texture;
     }

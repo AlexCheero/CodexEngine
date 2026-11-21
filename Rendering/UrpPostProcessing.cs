@@ -84,6 +84,14 @@ public sealed class UrpPostProcessing : IDisposable
     /// <summary>Adds one display step of noise before the 8-bit write, so dark gradients show no bands.</summary>
     public bool Dither { get; set; } = true;
 
+    /// <summary>
+    /// The alpha a surface writes into the scene to stand outside the stack, or 0 when the scene has no such surface.
+    /// Unity draws a held weapon after post-processing: it shows as lit, without bloom, vignette, exposure or grade,
+    /// and casts no bloom itself. Pick a value far below the scene's other alphas, such as -15: after a multisample
+    /// resolve the share of it left on an edge pixel tells how much of that pixel the surface covers.
+    /// </summary>
+    public float OutsideAlpha { get; set; }
+
     public UrpPostProcessing(GraphicsDevice gpu, string effectPath)
     {
         this.gpu = gpu;
@@ -156,6 +164,7 @@ public sealed class UrpPostProcessing : IDisposable
                 up[i] = new(gpu, mw, mh, false, SurfaceFormat.HalfVector4, DepthFormat.None);
             }
         }
+        p["OutsideScale"].SetValue(OutsideAlpha < 0 ? 1 / OutsideAlpha : 0);
         float threshold = GammaToLinear(s.Bloom[1]);
         p["BloomParams"].SetValue(new Vector4(threshold, threshold * .5f, s.Bloom[3], MathHelper.Lerp(.05f, .95f, s.Bloom[2])));
         var tint = new Vector3(GammaToLinear(s.BloomTint[0]), GammaToLinear(s.BloomTint[1]), GammaToLinear(s.BloomTint[2]));
