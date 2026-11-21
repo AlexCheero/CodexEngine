@@ -210,9 +210,14 @@ func has_system(target: String, full: String) -> bool:
             return true
     return false
 
-func refresh_available():
-    for child in available.get_children():
+# Rows are rebuilt on every change; the old ones leave the container at once so both sets never show together.
+func clear(container: Container):
+    for child in container.get_children():
+        container.remove_child(child)
         child.queue_free()
+
+func refresh_available():
+    clear(available)
     if asset_path.is_empty():
         return
     var target := selected_category()
@@ -269,8 +274,7 @@ func toggle_fold(target: String):
     refresh_lists()
 
 func refresh_lists():
-    for child in lists.get_children():
-        child.queue_free()
+    clear(lists)
     if asset_path.is_empty():
         return
     var query := added_search.text.strip_edges()
