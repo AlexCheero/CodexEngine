@@ -234,13 +234,20 @@ public static class CodexFidelityCapture
                 break;}
             case "particlecolor":data.renderPostProcessing=false;foreach(var ps in UnityEngine.Object.FindObjectsByType<ParticleSystem>(FindObjectsSortMode.None)){var mm=ps.main;mm.startColor=new Color(1,0,0,.75f);var col=ps.colorOverLifetime;col.enabled=false;ps.Simulate(3f,true,true,true);}break;
             case "particlenoinstancing":data.renderPostProcessing=false;foreach(var pr in UnityEngine.Object.FindObjectsByType<ParticleSystemRenderer>(FindObjectsSortMode.None))pr.enableGPUInstancing=false;break;
+            // "only-<name>[-nofog]": post off, only particle systems whose name contains <name> (compare with "noparticles").
+            case var only when only!=null && only.StartsWith("only-"):{
+                data.renderPostProcessing=false;var keep=experiment.Substring(5).Replace("-nofog","");
+                foreach(var pr in UnityEngine.Object.FindObjectsByType<ParticleSystemRenderer>(FindObjectsSortMode.None))if(!pr.name.Contains(keep))pr.enabled=false;
+                break;}
             case "noparticles":data.renderPostProcessing=false;foreach(var pr in UnityEngine.Object.FindObjectsByType<ParticleSystemRenderer>(FindObjectsSortMode.None))pr.enabled=false;break;
             case "noreflect":data.renderPostProcessing=false;RenderSettings.reflectionIntensity=0;RenderSettings.customReflectionTexture=null;RenderSettings.defaultReflectionMode=DefaultReflectionMode.Custom;
                 foreach(var probe in UnityEngine.Object.FindObjectsByType<ReflectionProbe>(FindObjectsSortMode.None))probe.enabled=false;break;
         }
         Debug.Log($"FIDELITY {level}: fog={RenderSettings.fog} mode={RenderSettings.fogMode} density={RenderSettings.fogDensity} start={RenderSettings.fogStartDistance} end={RenderSettings.fogEndDistance} color={RenderSettings.fogColor} skybox={RenderSettings.skybox?.shader.name} ambient={RenderSettings.ambientMode} {RenderSettings.ambientLight} far={cam.farClipPlane}");
         // "hdr": the camera's float colour without post-processing, written at -3 EV so values up to 8 stay visible.
-        bool hdr=experiment=="hdr";
+        // "hdr" combines with others as a suffix part, e.g. "hdr-nofog" (fog off, float colour).
+        bool hdr=experiment=="hdr"||experiment.StartsWith("hdr-");
+        if(experiment.EndsWith("-nofog"))RenderSettings.fog=false;
         if(hdr)data.renderPostProcessing=false;
         var rt=hdr?new RenderTexture(w,h,24,RenderTextureFormat.ARGBHalf,RenderTextureReadWrite.Linear){antiAliasing=1}
                   :new RenderTexture(w,h,24,RenderTextureFormat.ARGB32,RenderTextureReadWrite.sRGB){antiAliasing=1};
