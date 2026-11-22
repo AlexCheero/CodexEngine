@@ -19,7 +19,10 @@ namespace CodexECS
             public EcsSystem System { get; }
             public bool Active { get; set; }
             public bool NonPausable { get; set; }
-            /// <summary>Stopwatch ticks spent in Tick and how often it ran, while the pipeline's Profile is on.</summary>
+            /// <summary>
+            /// Stopwatch ticks spent in Tick and how often it ran, while the pipeline's Profile is on. A batch system
+            /// has its own Begin and End here, and of the time its group's batches took the share it used of them.
+            /// </summary>
             public long ProfiledTicks { get; internal set; }
             public int ProfiledRuns { get; internal set; }
             /// <summary>Stopwatch ticks the sync point before this system spent finishing jobs and playing back commands.</summary>
@@ -107,6 +110,11 @@ namespace CodexECS
 
         private readonly Dictionary<TGroup, GroupState> _groups;
         private readonly List<Registration> _registrations = new();
+        // The batch systems of the group being ticked, and where each is registered.
+        private readonly BatchGroup _batchGroup = new();
+        private readonly List<EcsBatchSystem> _batchSystems = new();
+        private readonly List<Registration> _batchRegistrations = new();
+        private long[] _batchTicks = new long[4];
         private bool _disposed;
 
         public EcsWorld World { get; }
@@ -240,6 +248,8 @@ namespace CodexECS
         /// and every command buffer played back before it is considered. A declaring system receives the unfinished
         /// jobs that conflict with it as its Dependency and may leave jobs running. The group ends with a
         /// sync point, so nothing runs across groups.
+        /// Batch systems that stand next to each other run as one parallel group (see EcsBatchSystem), which is
+        /// a sync point at its start and at its end.
         /// </summary>
         public void Tick(TGroup group, bool force = false)
         {
@@ -255,6 +265,11 @@ namespace CodexECS
                     if (!registration.Active || (IsPaused && !force && !registration.NonPausable))
                         continue;
                     var system = registration.System;
+                    if (system is EcsBatchSystem)
+                    {
+                        i = TickBatchGroup(state, i, force);
+                        continue;
+                    }
                     var access = system.Access;
                     // Pending commands can change which filters match, so an exclusive system is gated after them.
                     if (access == null && world.NeedsSync)
@@ -312,6 +327,57 @@ namespace CodexECS
                         ProfiledGroupSyncTicks += System.Diagnostics.Stopwatch.GetTimestamp() - waited;
                 }
             }
+        }
+
+        // Runs the batch systems registered from `first` on as one group and returns the index of the last of them.
+        private int TickBatchGroup(GroupState state, int first, bool force)
+        {
+            var world = World;
+            int last = first;
+            _batchSystems.Clear();
+            _batchRegistrations.Clear();
+            if (world.NeedsSync)
+            {
+                var waited = Profile ? System.Diagnostics.Stopwatch.GetTimestamp() : 0L;
+                world.Sync();
+                if (Profile)
+                    state.Registrations[first].ProfiledSyncTicks += System.Diagnostics.Stopwatch.GetTimestamp() - waited;
+            }
+            for (int i = first; i < state.Registrations.Count; i++)
+            {
+                var registration = state.Registrations[i];
+                if (!(registration.System is EcsBatchSystem member) || i > first && !member.JoinsGroup)
+                    break;
+                last = i;
+                if (!registration.Active || (IsPaused && !force && !registration.NonPausable) || !state.Graph.ShouldRun(i))
+                    continue;
+                _batchSystems.Add(member);
+                _batchRegistrations.Add(registration);
+            }
+            if (_batchSystems.Count == 0)
+                return last;
+            long[] ticks = null;
+            if (Profile)
+            {
+                if (_batchTicks.Length < _batchSystems.Count)
+                    _batchTicks = new long[_batchSystems.Count];
+                Array.Clear(_batchTicks, 0, _batchSystems.Count);
+                ticks = _batchTicks;
+            }
+            try
+            {
+                _batchGroup.Run(world, _batchSystems, ticks);
+            }
+            finally
+            {
+                if (Profile)
+                    for (int i = 0; i < _batchRegistrations.Count; i++)
+                    {
+                        _batchRegistrations[i].ProfiledTicks += ticks[i];
+                        _batchRegistrations[i].ProfiledRuns++;
+                    }
+            }
+            return last;
         }
 
         public void ResetProfile()

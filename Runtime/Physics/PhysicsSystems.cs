@@ -68,11 +68,11 @@ public sealed class PhysicsStepSystem : EcsSystem
 }
 
 /// <summary>
-/// After a solver step, reads every BodySample's body in parallel. It leaves the job running: the next system
-/// that reads BodySample, or the next sync point, waits for it.
+/// After a solver step, reads every BodySample's body, a batch of entities at a time on the job threads. A game's
+/// own batch systems placed next to it in the pipeline run in the same group, on the same batches.
 /// </summary>
 [System(ESystemCategory.FixedUpdate)]
-public sealed class BodySampleSystem : EcsSystem
+public sealed class BodySampleSystem : EcsBatchSystem
 {
     private readonly CollisionWorld physics;
     private readonly EcsFilter bodies;
@@ -86,16 +86,19 @@ public sealed class BodySampleSystem : EcsSystem
         bodies = world.Filter().With<BodySample>().Build();
         samples = world.GetComponentsPool<BodySample>();
         sample = Sample;
-        Declare().Read<PhysicsBodies>().Write<BodySample>();
     }
 
-    public override void Tick(EcsWorld world)
+    public override EcsFilter Entities => bodies;
+    public override int PagesPerBatch => 2;
+
+    public override bool Begin(EcsWorld world)
     {
-        if (physics.Steps == sampled) return;
+        if (physics.Steps == sampled) return false;
         sampled = physics.Steps;
-        if (world.Jobs == null) Sample(bodies.All);
-        else Dependency = bodies.ScheduleParallel(sample, 2, Dependency);
+        return true;
     }
+
+    public override void Run(EcsFilter.Batch batch, EntityCommandBuffer commands) => Sample(batch);
 
     /// <summary>Reads every body now and returns when done, for a caller that steps the collision world itself.</summary>
     public void SampleNow(EcsWorld world)

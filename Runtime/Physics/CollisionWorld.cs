@@ -126,10 +126,12 @@ public sealed class Collider : IDisposable
     {
         this.world = world;
         transform = node;
+        layer = (ushort)(node.layer + (trigger ? 32 : 0));
         using var body = BodyCreationSettings.Create(shape, CollisionWorld.Native(node.position), CollisionWorld.Native(node.rotation),
-            MotionType.Static, (ushort)(node.layer + (trigger ? 32 : 0)));
+            MotionType.Static, layer);
         body.SetIsSensor(trigger);
         Id = world.Bodies.CreateAndAddBody(body,Activation.DontActivate);
+        world.TouchLayer(layer);
         world.Register(this);
         if (!node.IsActiveInHierarchy) world.Bodies.RemoveBody(Id);
     }
@@ -137,26 +139,32 @@ public sealed class Collider : IDisposable
     {
         this.world = world;
         transform = node;
+        layer = (ushort)node.layer;
         Id = bodyId;
         Dynamic = true;
         node.Attach(this);
+        world.TouchLayer(layer);
         world.Register(this);
     }
+    // The object layer the body was made in.
+    private readonly ushort layer;
     internal bool Dynamic { get; }
     internal int DynamicSlot=-1;
     public void SetCapsule(float height,float radius)
     {
         using Shape shape = CollisionWorld.Capsule(height,radius);
         world.Bodies.SetShape(Id,shape,false,Activation.DontActivate);
+        world.TouchLayer(layer);
     }
     internal void Synchronize()
     {
+        world.TouchBody(Id,layer);
         bool added = world.Bodies.IsAdded(Id);
         if (!transform.IsActiveInHierarchy) { if (added) world.Bodies.RemoveBody(Id); return; }
         world.Bodies.SetPositionAndRotationWhenChanged(Id,CollisionWorld.Native(transform.position),CollisionWorld.Native(transform.rotation),Activation.DontActivate);
         if (!added) world.Bodies.AddBody(Id,Activation.DontActivate);
     }
-    public void Dispose() => world.Remove(Id);
+    public void Dispose() { world.TouchBody(Id,layer); world.Remove(Id); }
 }
 
 public partial class CollisionWorld : IDisposable
@@ -194,6 +202,7 @@ public partial class CollisionWorld : IDisposable
         foreach (var pair in collisions) pairs.EnableCollision(pair.First, pair.Second);
         broad = ObjectVsBroadPhaseLayerFilterTable.Create(layers,1,pairs,64);
         limits = Limits;
+        bodyRevisions = new int[limits.Bodies];
         system = PhysicsSystem.Create();
         system.Init((uint)limits.Bodies,0,(uint)limits.BodyPairs,(uint)limits.ContactConstraints,layers,broad,pairs);
         Bodies = system.GetBodyInterface();
@@ -202,6 +211,28 @@ public partial class CollisionWorld : IDisposable
         scene = new CollisionNode(this, "Level collision");
         previous = active.Value;
         active.Value = this;
+    }
+    // How often a body of each object layer has been added, removed, moved or reshaped by hand, and how often
+    // each body has had a hand on it at all, by its index among the solver's bodies. The counts stand apart from
+    // the bodies' own objects: the job threads read those all the time, and a write would empty their caches of them.
+    private readonly int[] layerRevisions = new int[64];
+    private int[] bodyRevisions;
+    private const uint BodyIndex = 0x7fffff;
+    internal void TouchLayer(ushort layer) => layerRevisions[layer & 63]++;
+    internal void TouchBody(uint body) => bodyRevisions[body & BodyIndex]++;
+    internal void TouchBody(uint body, ushort layer) { TouchBody(body); TouchLayer(layer); }
+    internal int RevisionOf(uint body) => bodyRevisions[body & BodyIndex];
+    /// <summary>
+    /// Counts what has been done by hand to the bodies of the layers in the mask: one added, removed, moved or
+    /// reshaped. What the solver moves does not count. A query's answer about those layers, given once, still
+    /// holds for the same query while the count has not changed and the solver has not stepped.
+    /// </summary>
+    public int Revision(int layerMask)
+    {
+        int sum = 0;
+        for (int layer = 0; layer < 32; layer++)
+            if ((layerMask & (1 << layer)) != 0) sum += layerRevisions[layer];
+        return sum;
     }
     internal static float3 Native(Vector3 v) => new(v.x,v.y,v.z);
     internal static floatQuat Native(Quaternion q) => new(q.x,q.y,q.z,q.w);

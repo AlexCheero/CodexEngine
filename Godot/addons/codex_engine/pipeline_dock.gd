@@ -14,9 +14,11 @@ var directory := ""
 var asset_path := ""
 # Category name -> Array of {"Name": String, "Active": bool, "NonPausable": bool}, in tick order.
 var asset := {}
-# Array of {"Name": String, "Assembly": String, "Categories": Array}.
+# Array of {"Name": String, "Assembly": String, "Categories": Array}, with "Batch": true on a batch system.
 var catalog: Array = []
 var known := {}
+# Names of the batch systems: neighbours among them run as one parallel group.
+var batch := {}
 var folded := {}
 var dirty := false
 
@@ -133,6 +135,7 @@ func reload_all():
 func load_catalog():
     catalog = []
     known = {}
+    batch = {}
     var path := directory.path_join("systems.json")
     if not FileAccess.file_exists(path):
         return
@@ -141,6 +144,8 @@ func load_catalog():
         catalog = parsed
         for entry in catalog:
             known[entry.get("Name", "")] = true
+            if bool(entry.get("Batch", false)):
+                batch[entry.get("Name", "")] = true
 
 func open_asset(path: String):
     asset_path = path
@@ -332,6 +337,13 @@ func system_row(target: String, index: int, entry: Dictionary, reorder: bool) ->
         label.add_theme_color_override("font_color", get_theme_color("warning_color", "Editor"))
         label.tooltip_text += "\nNot in systems.json: the game will refuse a pipeline that names a missing system."
     row.add_child(label)
+    if batch.has(entry["Name"]):
+        var mark := Label.new()
+        mark.text = "||"
+        mark.tooltip_text = "Works through its entities a batch at a time, on the job threads.\nSystems marked like this that stand next to each other run as one parallel group."
+        mark.mouse_filter = Control.MOUSE_FILTER_PASS
+        mark.add_theme_color_override("font_color", get_theme_color("accent_color", "Editor"))
+        row.add_child(mark)
     # An icon toggle: a second labelled checkbox would leave no room for the system's name.
     var pausable := Button.new()
     pausable.toggle_mode = true

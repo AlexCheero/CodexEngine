@@ -73,13 +73,22 @@ public readonly struct RigidBody : IDisposable
     public bool HasSupport(Vector3 up,float tolerance,float minimumDot,int layerMask)=>
         World.HasSupport(this,up,tolerance,minimumDot,layerMask);
     public int OverlapNonAlloc(int layerMask,Collider[] results)=>World.OverlapBodyNonAlloc(this,layerMask,results);
-    public void SetKinematic(bool value)=>World.Bodies.SetMotionType(Id,value?MotionType.Kinematic:MotionType.Dynamic,Activation.Activate);
-    public void AddImpulse(Vector3 impulse,Vector3 point)=>World.Bodies.AddImpulse(Id,CollisionWorld.Native(impulse),CollisionWorld.Native(point));
-    public void MoveKinematic(Vector3 position,Quaternion rotation,float dt)=>
+    /// <summary>
+    /// Counts what has been done to the body by hand: an impulse, a velocity, pose or motion type set, its removal.
+    /// The solver's own motion does not count. Whoever read the body's pose, velocity or sleep on one thread can
+    /// tell by it, later and on another, whether what it read still holds.
+    /// </summary>
+    public int Revision => World.RevisionOf(Id);
+    public void SetKinematic(bool value){World.TouchBody(Id);World.Bodies.SetMotionType(Id,value?MotionType.Kinematic:MotionType.Dynamic,Activation.Activate);}
+    public void AddImpulse(Vector3 impulse,Vector3 point){World.TouchBody(Id);World.Bodies.AddImpulse(Id,CollisionWorld.Native(impulse),CollisionWorld.Native(point));}
+    public void MoveKinematic(Vector3 position,Quaternion rotation,float dt)
+    {
+        World.TouchBody(Id);
         World.Bodies.MoveKinematic(Id,CollisionWorld.Native(position),CollisionWorld.Native(rotation),dt);
-    public void AddImpulse(Vector3 impulse) => World.Bodies.AddImpulse(Id, CollisionWorld.Native(impulse));
-    public void SetAngularVelocity(Vector3 velocity) => World.Bodies.SetAngularVelocity(Id, CollisionWorld.Native(velocity));
-    public void SetLinearVelocity(Vector3 velocity) => World.Bodies.SetLinearVelocity(Id, CollisionWorld.Native(velocity));
+    }
+    public void AddImpulse(Vector3 impulse) { World.TouchBody(Id); World.Bodies.AddImpulse(Id, CollisionWorld.Native(impulse)); }
+    public void SetAngularVelocity(Vector3 velocity) { World.TouchBody(Id); World.Bodies.SetAngularVelocity(Id, CollisionWorld.Native(velocity)); }
+    public void SetLinearVelocity(Vector3 velocity) { World.TouchBody(Id); World.Bodies.SetLinearVelocity(Id, CollisionWorld.Native(velocity)); }
     public Vector3 LinearVelocity => CollisionWorld.Managed(World.Bodies.GetLinearVelocity(Id));
     public bool IsSleeping => !World.Bodies.IsActive(Id);
     public void SetFriction(float value) => World.Bodies.SetFriction(Id,value);
