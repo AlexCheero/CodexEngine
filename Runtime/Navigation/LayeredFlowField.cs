@@ -4,6 +4,8 @@ namespace CodexEngine.Navigation;
 
 // Regions are connected components within 12x12 X/Z tiles, separated by body class
 // and storey. A portal groups all legal crossings from one region to its neighbor.
+// Regions join only over two-way links. A one-way link (a drop off a ledge) is always
+// a portal or a link inside one region, and integration follows it against its direction.
 // Moving the target a cell only reintegrates its own region. Leaving that region
 // also updates the much smaller portal graph. Each local portal flow is immutable.
 internal sealed class LayeredFlowAtlas
@@ -13,17 +15,24 @@ internal sealed class LayeredFlowAtlas
     internal readonly LayeredNavigationGrid.Link[] Links;
     internal readonly int Mask;
     internal readonly int[] Region,Local;
+    // One-way links into each span for this class: InFrom[InStart[n]..InStart[n+1]) with their costs.
+    private readonly int[] inStart,inFrom;
+    private readonly int[] inCost;
     internal readonly Sector[] Sectors;
     internal readonly int Largest;
     internal sealed class Sector(int[] nodes)
     {
         internal readonly int[] Nodes=nodes;
         internal Portal[] Exits;
+        // Portals of neighbouring regions that lead here, in the order of this region's own exits back to them,
+        // then those with no way back.
+        internal Portal[] Entrances;
         internal Vector3 Center;
     }
     internal sealed class Portal(int region,int size)
     {
         internal readonly int To=region;
+        internal int From;
         internal readonly int[] Next=new int[size];
         internal readonly int[] Distance=new int[size];
         internal int TransitCost;
@@ -37,6 +46,16 @@ internal sealed class LayeredFlowAtlas
         int count=grid.NodeCount;
         Region=new int[count];Array.Fill(Region,-1);
         Local=new int[count];
+        inStart=new int[count+1];
+        for(int node=0;node<count;node++)
+        for(int e=grid.Edges[node];e<grid.Edges[node+1];e++)
+            if((links[e].Profiles&~links[e].Back&Mask)!=0)inStart[links[e].To+1]++;
+        for(int node=0;node<count;node++)inStart[node+1]+=inStart[node];
+        inFrom=new int[inStart[count]];inCost=new int[inStart[count]];
+        var fill=inStart[..count];
+        for(int node=0;node<count;node++)
+        for(int e=grid.Edges[node];e<grid.Edges[node+1];e++)
+            if((links[e].Profiles&~links[e].Back&Mask)!=0){int at=fill[links[e].To]++;inFrom[at]=node;inCost[at]=links[e].ForwardCost;}
         var queue=new int[count];List<Sector> sectors=[];
         for(int seed=0;seed<count;seed++)
         {
@@ -54,7 +73,7 @@ internal sealed class LayeredFlowAtlas
                 {
                     ref readonly var edge=ref links[e];
                     int to=edge.To,c=grid.Column[to];
-                    if((edge.Profiles&Mask)==0 || Region[to]>=0 || c%width/Tile!=tileX || c/width/Tile!=tileZ)continue;
+                    if((edge.Profiles&edge.Back&Mask)==0 || Region[to]>=0 || c%width/Tile!=tileX || c/width/Tile!=tileZ)continue;
                     Region[to]=region;queue[tail++]=to;
                 }
             }
@@ -76,7 +95,7 @@ internal sealed class LayeredFlowAtlas
                 if(other==region)continue;
                 if(!exits.TryGetValue(other,out var portal))
                 {
-                    exits.Add(other,portal=new(other,sector.Nodes.Length));
+                    exits.Add(other,portal=new(other,sector.Nodes.Length){From=region});
                     Array.Fill(portal.Distance,int.MaxValue);
                 }
                 // Pick a downhill crossing before a climb when both reach this neighbor.
@@ -100,6 +119,16 @@ internal sealed class LayeredFlowAtlas
         foreach(var portal in Sectors[r].Exits)
         foreach(var reverse in Sectors[portal.To].Exits)
             if(reverse.To==r){portal.Reverse=reverse;break;}
+        var entrances=new List<Portal>[Sectors.Length];
+        for(int r=0;r<Sectors.Length;r++)
+        {
+            var list=entrances[r]=[];
+            foreach(var exit in Sectors[r].Exits)if(exit.Reverse!=null)list.Add(exit.Reverse);
+        }
+        for(int r=0;r<Sectors.Length;r++)
+        foreach(var portal in Sectors[r].Exits)
+            if(portal.Reverse==null)entrances[portal.To].Add(portal);
+        for(int r=0;r<Sectors.Length;r++)Sectors[r].Entrances=entrances[r].ToArray();
     }
 
     internal void Integrate(int region,int[] next,int[] distances,PriorityQueue<int,int> frontier)
@@ -110,10 +139,19 @@ internal sealed class LayeredFlowAtlas
             for(int e=Grid.Edges[node];e<Grid.Edges[node+1];e++)
             {
                 ref readonly var edge=ref Links[e];int to=edge.To;
-                if((edge.Profiles&Mask)==0 || Region[to]!=region)continue;
+                if((edge.Profiles&edge.Back&Mask)==0 || Region[to]!=region)continue;
                 int at=Local[to],d=cost+edge.ReverseCost;
                 if(d>=distances[at])continue;
                 distances[at]=d;next[at]=node;frontier.Enqueue(to,d);
+            }
+            // Spans that only drop onto this one.
+            for(int i=inStart[node];i<inStart[node+1];i++)
+            {
+                int from=inFrom[i];
+                if(Region[from]!=region)continue;
+                int at=Local[from],d=cost+inCost[i];
+                if(d>=distances[at])continue;
+                distances[at]=d;next[at]=node;frontier.Enqueue(from,d);
             }
         }
     }
@@ -144,10 +182,9 @@ internal sealed class LayeredFlowField(LayeredFlowAtlas atlas)
             while(queue.TryDequeue(out int sector,out int cost))
             {
                 if(cost!=remaining[sector])continue;
-                foreach(var back in atlas.Sectors[sector].Exits)
+                foreach(var incoming in atlas.Sectors[sector].Entrances)
                 {
-                    int neighbor=back.To;
-                    var incoming=back.Reverse;
+                    int neighbor=incoming.From;
                     int d=cost+incoming.TransitCost;
                     if(d>=remaining[neighbor])continue;
                     remaining[neighbor]=d;exits[neighbor]=incoming;queue.Enqueue(neighbor,d);

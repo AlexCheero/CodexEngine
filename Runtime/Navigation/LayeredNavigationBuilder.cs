@@ -37,6 +37,11 @@ public sealed class LayeredNavigationBuildSettings
     /// (converted classic maps) raise it toward their step height, or cells beside every step drop out.
     /// </summary>
     public float SoleRise=.22f;
+    /// <summary>
+    /// The highest drop a body takes off a ledge onto the floor beside it, as a one-way link down. Zero bakes no
+    /// drops: a body then only leaves a ledge where it could also come back up (a step or a climbable wall).
+    /// </summary>
+    public float DropHeight;
     public int MaxDegreeOfParallelism=Math.Min(12,Environment.ProcessorCount);
 }
 
@@ -375,6 +380,63 @@ public sealed class LayeredNavigationBuilder : IDisposable
         return new(to,mask,climbs,gates);
     }
 
+    // One-way links from a ledge down to the floor beside it, for the classes that have no other link there.
+    private void Drops(Node[][] columns,int[] starts,List<Link>[] links,Func<int,bool> inBox)
+    {
+        int width=Width,length=settings.Length;
+        (int X,int Z)[] directions=[(1,0),(-1,0),(0,1),(0,-1)];
+        var added=new List<(int From,Link Link)>[width*length];
+        Parallel.For(0,width*length,parallel,col=>{
+            int x=col%width,z=col/width;
+            List<(int,Link)> found=null;
+            foreach(var d in directions)
+            {
+                int xx=x+d.X,zz=z+d.Z;
+                if((uint)xx>=width || (uint)zz>=length)continue;
+                int col2=zz*width+xx;
+                if(!inBox(col) && !inBox(col2))continue;
+                for(int a=starts[col];a<starts[col+1];a++)
+                {
+                    var n=columns[col][a-starts[col]];
+                    // The floor a body falls onto: the highest one in the next column below this ledge.
+                    int b=-1;
+                    for(int i=starts[col2+1]-1;i>=starts[col2];i--)
+                    {
+                        float below=n.Floor-columns[col2][i-starts[col2]].Floor;
+                        if(below<=.05f)continue;
+                        if(below<=settings.DropHeight)b=i;
+                        break;
+                    }
+                    if(b<0)continue;
+                    var m=columns[col2][b-starts[col2]];
+                    byte mask=0;
+                    for(int k=0;k<profiles.Length;k++)
+                    {
+                        byte bit=(byte)(1<<k);
+                        if((n.Fits&m.Fits&bit)==0 || n.Floor-m.Floor<=profiles[k].Step)continue;
+                        bool linked=false;
+                        foreach(var link in links[a])if(link.To==b && (link.Mask&bit)!=0){linked=true;break;}
+                        if(linked)continue;
+                        // Walk off the ledge at its own height, then fall straight down onto the floor below.
+                        var top=Center(col,n.Feet[k]);var bottom=Center(col2,m.Feet[k]);
+                        var over=new Vector3(bottom.X,top.Y+.065f,bottom.Z);
+                        if(!Blocked(k,top+Vector3.UnitY*.065f,over,settings.WalkLayers) && !Blocked(k,over,bottom,settings.WalkLayers))mask|=bit;
+                    }
+                    if(mask!=0)(found??=[]).Add((a,new(b,mask,0,0)));
+                }
+            }
+            added[col]=found;
+        });
+        // A pair other classes already link keeps one link: the dropping classes join its mask.
+        foreach(var list in added)
+            if(list!=null)foreach(var (a,link) in list)
+            {
+                int same=links[a].FindIndex(l=>l.To==link.To);
+                if(same<0)links[a].Add(link);
+                else links[a][same]=links[a][same] with{Mask=(byte)(links[a][same].Mask|link.Mask)};
+            }
+    }
+
     // Numbers spans, keeps the previous grid's links away from the changed box [x0,x1]x[z0,z1] and
     // bakes the links that touch it. Without a previous grid every link is baked.
     private LayeredNavigationGrid Assemble(Node[][] columns,LayeredNavigationGrid previous,int x0,int z0,int x1,int z1)
@@ -475,6 +537,7 @@ public sealed class LayeredNavigationBuilder : IDisposable
                     foreach(var (a,link) in list){links[a].Add(link);links[link.To].Add(link with{To=a});}
         }
         Pass([(1,0),(0,1)],false);Pass([(1,1),(-1,1)],true);
+        if(settings.DropHeight>0)Drops(columns,starts,links,InBox);
 
         var spans=new LayeredSpan[total];
         int index=0;

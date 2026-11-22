@@ -6,7 +6,10 @@ namespace CodexEngine.Navigation;
 /// <summary>One walkable floor in a grid column. <see cref="Profiles"/> has a bit for each body class that stands there.</summary>
 public record struct LayeredSpan(float Floor,float Ceiling,byte Profiles,byte Flags);
 
-/// <summary>A directed walk link between spans of neighbouring columns, per body class.</summary>
+/// <summary>
+/// A directed walk link between spans of neighbouring columns, per body class. Most links come in pairs; a class
+/// whose link has no partner back only travels it forward, as when it drops off a ledge.
+/// </summary>
 public readonly record struct LayeredEdge(int To,byte Profiles,byte Climb);
 
 /// <summary>Body classes that cannot cross <see cref="Edge"/> while gate <see cref="Group"/> is closed.</summary>
@@ -37,7 +40,9 @@ public sealed class LayeredNavigationGrid
     internal readonly LayeredGate[] Gates;
     private readonly Dictionary<int,GateState> states=[];
 
-    internal readonly record struct Link(int To,byte Profiles,byte Climb,ushort ReverseCost,ushort ForwardCost);
+    // Back holds the classes that can also walk the reverse way. A class in Profiles but not in Back only goes
+    // forward: a drop off a ledge. ReverseCost is the cost of that reverse walk where it exists.
+    internal readonly record struct Link(int To,byte Profiles,byte Climb,ushort ReverseCost,ushort ForwardCost,byte Back);
     internal sealed class GateState(Link[] links,LayeredFlowAtlas[] atlases)
     {
         internal readonly Link[] Links=links;
@@ -83,7 +88,9 @@ public sealed class LayeredNavigationGrid
             // Reverse integration visits predecessors. Uphill travel is more expensive.
             int cost=length2+(int)MathF.Round(40*Math.Max(0,Floors[node]-Floors[e.To])/cellSize);
             int forward=length2+(int)MathF.Round(40*Math.Max(0,Floors[e.To]-Floors[node])/cellSize);
-            Links[i]=new(e.To,e.Profiles,e.Climb,checked((ushort)cost),checked((ushort)forward));
+            byte back=0;
+            for(int j=Edges[e.To];j<Edges[e.To+1];j++)if(edges[j].To==node)back|=edges[j].Profiles;
+            Links[i]=new(e.To,e.Profiles,e.Climb,checked((ushort)cost),checked((ushort)forward),back);
         }
         Gates=gates.ToArray();
         foreach(var gate in Gates)
