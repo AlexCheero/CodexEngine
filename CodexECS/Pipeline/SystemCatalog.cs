@@ -73,7 +73,8 @@ namespace CodexECS
         /// <summary>
         /// Writes the catalog for an editor that cannot load the game's assembly: name, assembly and categories
         /// of each system that carries a System attribute, sorted by name. Systems without the attribute still
-        /// resolve by name; they are just not offered.
+        /// resolve by name; they are just not offered. A batch system carries "Batch": true, so the editor can
+        /// show which neighbours run as one parallel group.
         /// </summary>
         public static string ExportJson()
         {
@@ -81,9 +82,14 @@ namespace CodexECS
             {
                 Name = type.FullName,
                 Assembly = type.Assembly.GetName().Name,
-                Categories = Categories.Where(c => (CategoriesOf(type) & c) != 0).Select(c => c.ToString()).ToArray()
+                Categories = Categories.Where(c => (CategoriesOf(type) & c) != 0).Select(c => c.ToString()).ToArray(),
+                Batch = typeof(EcsBatchSystem).IsAssignableFrom(type) ? (bool?)true : null
             });
-            return JsonSerializer.Serialize(entries, new JsonSerializerOptions { WriteIndented = true });
+            return JsonSerializer.Serialize(entries, new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+            });
         }
     }
 }

@@ -132,7 +132,14 @@ public partial class CollisionWorld
         hit=default;return false;
     }
     private readonly ThreadLocal<Scratch> scratch = new(() => new Scratch(),true);
-    private readonly ConcurrentDictionary<(int,QueryTriggerInteraction),LayerFilter> filters = new();
+    // A mask is one of Jolt's own layer filters, so that a query tests layers without calling back into managed
+    // code. The filters share a pair table apart from the solver's: a row past the real layers stands for one
+    // mask and collides with the layers in it. Past the last row LayerFilter gives the same answers.
+    private const int ObjectLayers=64, MaskRows=192;
+    private ObjectLayerPairFilterTable maskPairs;
+    private readonly List<DefaultObjectLayerFilter> maskFilters = new();
+    private readonly List<LayerFilter> managedFilters = new();
+    private readonly ConcurrentDictionary<(int,QueryTriggerInteraction),ObjectLayerFilter> filters = new();
     private RayCastSettings raySettings;
     private CollideShapeSettings overlapSettings,twoSidedOverlaps;
     private ShapeCastSettings sweepSettings;
@@ -145,20 +152,40 @@ public partial class CollisionWorld
         twoSidedOverlaps=CollideShapeSettings.Create();
         twoSidedOverlaps.SetBackFaceMode(BackFaceMode.CollideWithBackFaces);
         sweepSettings = ShapeCastSettings.Create();
+        maskPairs = ObjectLayerPairFilterTable.Create(ObjectLayers+MaskRows);
     }
     private void DisposeQuerySettings()
     {
         foreach (var s in scratch.Values) s.Dispose();
         scratch.Dispose();
-        foreach (var f in filters.Values) f.Dispose();
+        foreach (var f in maskFilters) f.Dispose();
+        foreach (var f in managedFilters) f.Dispose();
+        maskPairs.Dispose();
         raySettings.Dispose(); overlapSettings.Dispose(); twoSidedOverlaps.Dispose(); sweepSettings.Dispose();
     }
-    private LayerFilter Filter(int mask,QueryTriggerInteraction triggers)
+    private ObjectLayerFilter Filter(int mask,QueryTriggerInteraction triggers)
     {
         if (filters.TryGetValue((mask,triggers),out var filter)) return filter;
         lock(filters) {
-            if (!filters.TryGetValue((mask,triggers),out filter))
-                filters[(mask,triggers)] = filter = new LayerFilter(mask,triggers == QueryTriggerInteraction.Collide);
+            if (filters.TryGetValue((mask,triggers),out filter)) return filter;
+            bool collide = triggers == QueryTriggerInteraction.Collide;
+            if (maskFilters.Count < MaskRows)
+            {
+                // The layers LayerFilter would let through: a solid layer by its bit, and its trigger twin 32 above when triggers count.
+                ushort row = (ushort)(ObjectLayers+maskFilters.Count);
+                for (ushort layer = 0; layer < ObjectLayers; layer++)
+                    if ((collide || layer < 32) && (mask & (1 << (layer & 31))) != 0) maskPairs.EnableCollision(row,layer);
+                var native = DefaultObjectLayerFilter.Create(maskPairs,row);
+                maskFilters.Add(native);
+                filter = native;
+            }
+            else
+            {
+                var managed = new LayerFilter(mask,collide);
+                managedFilters.Add(managed);
+                filter = managed;
+            }
+            filters[(mask,triggers)] = filter;
             return filter;
         }
     }
