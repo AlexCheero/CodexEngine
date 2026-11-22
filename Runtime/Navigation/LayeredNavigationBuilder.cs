@@ -31,6 +31,12 @@ public sealed class LayeredNavigationBuildSettings
     public float MinNormal=.66f;
     /// <summary>Height differences above this are wall climbs and need an exposed face.</summary>
     public float MantleHeight=2;
+    /// <summary>
+    /// How far above a column's centre floor its footprint may find support and still stand on that floor.
+    /// Higher support is taken for a neighbouring roof or boulder. Levels with many low detail steps
+    /// (converted classic maps) raise it toward their step height, or cells beside every step drop out.
+    /// </summary>
+    public float SoleRise=.22f;
     public int MaxDegreeOfParallelism=Math.Min(12,Environment.ProcessorCount);
 }
 
@@ -233,7 +239,7 @@ public sealed class LayeredNavigationBuilder : IDisposable
                 if(!sole[k].Cast(at,J.Vector3.down,lift+.15f,walk,out var ground) || ground.normal.y<minNormal)continue;
                 float feet=floor+lift-ground.distance;
                 // A horizontal neighbouring roof or boulder is not the centre's support.
-                if(feet-floor>size.Radius*slope+.22f || ceiling-feet<size.Height+skin)continue;
+                if(feet-floor>size.Radius*slope+settings.SoleRise || ceiling-feet<size.Height+skin)continue;
                 at.y=feet+.04f+skin;
                 if(sole[k].Cast(at,J.Vector3.up,size.Height-.08f,walk,out _))continue;
                 node.Fits|=(byte)(1<<k);node.Feet[k]=feet;
