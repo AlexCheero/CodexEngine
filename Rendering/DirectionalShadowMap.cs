@@ -1,5 +1,10 @@
+using System.Runtime.InteropServices;
+using SphereSet = CodexEngine.Runtime.SphereSet;
+using SphereTests = CodexEngine.Runtime.SphereTests;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
+using Simd = System.Numerics.Vector;
+using Wide = System.Numerics.Vector<float>;
 
 namespace CodexEngine.Rendering;
 
@@ -87,6 +92,53 @@ public sealed class DirectionalShadowMap : IDisposable
 
     /// <summary>Whether the bounds reach any cascade. Safe on culling workers once the map is positioned.</summary>
     public bool Reaches(BoundingSphere bounds) => widest.Intersects(bounds);
+
+    /// <summary>The volume <see cref="Reaches"/> tests, for testing many spheres together.</summary>
+    public BoundingFrustum Reach => widest;
+
+    /// <summary>
+    /// <see cref="Intersects"/> for a whole set: culls every sphere the current cascade need not draw. The
+    /// arithmetic is that of the one-sphere test, so the two always agree.
+    /// </summary>
+    public void CullCasters(SphereSet spheres, Span<int> culled)
+    {
+        int padded = spheres.Padded;
+        ArgumentOutOfRangeException.ThrowIfLessThan(culled.Length, padded);
+        if (!Simd.IsHardwareAccelerated || SphereTests.ForceScalar)
+        {
+            for (int i = 0; i < spheres.Count; i++)
+                if (!Intersects(new BoundingSphere(new Vector3(spheres.X[i], spheres.Y[i], spheres.Z[i]), spheres.Radius[i]))) culled[i] = -1;
+            return;
+        }
+        var o = origin[current];
+        Wide m11 = new(basis.M11), m21 = new(basis.M21), m31 = new(basis.M31), m41 = new(basis.M41);
+        Wide m12 = new(basis.M12), m22 = new(basis.M22), m32 = new(basis.M32), m42 = new(basis.M42);
+        Wide m13 = new(basis.M13), m23 = new(basis.M23), m33 = new(basis.M33), m43 = new(basis.M43);
+        Wide ox = new(o.X), oy = new(o.Y), oz = new(o.Z), cascade = new(radius[current]), depth = new(2 * casterDepth);
+        // What a smaller cascade holds whole, before the sphere's own radius comes off it.
+        Span<float> held = stackalloc float[MaxCascades];
+        for (int i = 0; i < current; i++) held[i] = radius[i] * (limit - Band) - 4 * (2 * radius[i + 1] / resolution);
+        ref float xs = ref MemoryMarshal.GetArrayDataReference(spheres.X), ys = ref MemoryMarshal.GetArrayDataReference(spheres.Y);
+        ref float zs = ref MemoryMarshal.GetArrayDataReference(spheres.Z), rs = ref MemoryMarshal.GetArrayDataReference(spheres.Radius);
+        ref int result = ref MemoryMarshal.GetReference(culled);
+        for (int at = 0; at < padded; at += Wide.Count)
+        {
+            var x = Simd.LoadUnsafe(ref xs, (nuint)at); var y = Simd.LoadUnsafe(ref ys, (nuint)at);
+            var z = Simd.LoadUnsafe(ref zs, (nuint)at); var r = Simd.LoadUnsafe(ref rs, (nuint)at);
+            var px = x * m11 + y * m21 + z * m31 + m41;
+            var py = x * m12 + y * m22 + z * m32 + m42;
+            var pz = x * m13 + y * m23 + z * m33 + m43;
+            var reach = cascade + r; var behind = oz - pz;
+            var outside = Simd.GreaterThan(Simd.Abs(px - ox), reach) | Simd.GreaterThan(Simd.Abs(py - oy), reach) |
+                Simd.LessThan(behind, -r) | Simd.GreaterThan(behind, depth + r);
+            for (int i = 0; i < current; i++)
+            {
+                var inside = new Wide(held[i]) - r;
+                outside |= Simd.LessThan(Simd.Abs(px - new Wide(origin[i].X)), inside) & Simd.LessThan(Simd.Abs(py - new Wide(origin[i].Y)), inside);
+            }
+            Simd.StoreUnsafe(Simd.LoadUnsafe(ref result, (nuint)at) | outside, ref result, (nuint)at);
+        }
+    }
 
     /// <summary>
     /// Whether a caster must be drawn into the current cascade: it reaches the cascade, and no smaller cascade

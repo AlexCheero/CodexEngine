@@ -277,6 +277,13 @@ public sealed class LocalShadowAtlas : IDisposable
     /// <summary>Whether a caster is near enough to the tile's light to matter at all: a cheap first test for groups of casters.</summary>
     public bool Reaches(BoundingSphere bounds) => reach.Intersects(bounds);
 
+    /// <summary><see cref="Intersects"/> for a whole set: culls every sphere that shadows nothing through the tile being drawn.</summary>
+    public void CullCasters(CodexEngine.Runtime.SphereSet spheres, Span<int> culled)
+    {
+        SphereCulling.CullBySphere(spheres, reach, culled);
+        SphereCulling.CullByFrustum(spheres, faces[current].Frustum, culled);
+    }
+
     /// <summary>
     /// Tells the lights of the last <see cref="ClusteredLights.Build"/> which of them hold a row here. The atlas
     /// is in world space, so the same rows serve every view of the frame.

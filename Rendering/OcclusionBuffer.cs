@@ -1,5 +1,9 @@
+using System.Runtime.CompilerServices;
 using CodexECS;
 using Microsoft.Xna.Framework;
+using Simd = System.Numerics.Vector;
+using SphereTests = CodexEngine.Runtime.SphereTests;
+using Wide = System.Numerics.Vector<float>;
 
 namespace CodexEngine.Rendering;
 
@@ -200,11 +204,23 @@ public sealed class OcclusionBuffer
         // What reaches past the image's edge cannot be told hidden from the image.
         if (left < 0 || top < 0 || right >= width || bottom >= height) return false;
         float nearestPoint = 1 / front;
+        int span = right - left + 1;
+        bool vectors = Simd.IsHardwareAccelerated && !SphereTests.ForceScalar && span >= Wide.Count;
+        var limit = new Wide(nearestPoint);
         for (int row = top; row <= bottom; row++)
         {
-            int at = row * width;
-            for (int column = left; column <= right; column++)
-                if (nearest[at + column] <= nearestPoint) return false;
+            ref float pixels = ref nearest[row * width + left];
+            int column = 0;
+            if (vectors)
+            {
+                for (; column <= span - Wide.Count; column += Wide.Count)
+                    if (Simd.LessThanOrEqualAny(Simd.LoadUnsafe(ref pixels, (nuint)column), limit)) return false;
+                // The last few pixels are read again with a vector that ends at the run's end.
+                if (column < span && Simd.LessThanOrEqualAny(Simd.LoadUnsafe(ref pixels, (nuint)(span - Wide.Count)), limit)) return false;
+                continue;
+            }
+            for (; column < span; column++)
+                if (Unsafe.Add(ref pixels, column) <= nearestPoint) return false;
         }
         return true;
     }

@@ -1,5 +1,8 @@
 using CodexECS;
+using SphereSet = CodexEngine.Runtime.SphereSet;
+using SphereTests = CodexEngine.Runtime.SphereTests;
 using Microsoft.Xna.Framework;
+using N = System.Numerics;
 
 namespace CodexEngine.Rendering;
 
@@ -45,6 +48,11 @@ public struct VisibilityView
     public OcclusionBuffer Occlusion;
     /// <summary>Whether a sphere can cast a shadow the frame will show, or null for a view without shadow casters.</summary>
     public Func<BoundingSphere, bool> Casts;
+    /// <summary>
+    /// The same question as a volume: a sphere can cast when it touches this frustum. Where the casters' reach is
+    /// one, give it here in place of <see cref="Casts"/> and a cell's items are tested together.
+    /// </summary>
+    public BoundingFrustum CasterVolume;
 }
 
 /// <summary>
@@ -53,6 +61,9 @@ public struct VisibilityView
 /// the job threads: against the view's frustum, by distance, by size on screen and against the frame's occluders.
 /// A seen item also gets its level of detail from its size on screen. The lists are per cell and in the order the
 /// items were given, on any number of threads.
+/// A cell keeps its items' spheres a field to an array (<see cref="SpheresIn"/>), and the frustum and distance
+/// tests run over a whole cell at a time. A pass that tests the items again, a shadow cascade or a light's tile,
+/// can do the same with the set.
 /// </summary>
 public sealed class VisibilityGrid
 {
@@ -60,8 +71,14 @@ public sealed class VisibilityGrid
     {
         public readonly BoundingSphere Bounds = bounds;
         public readonly int[] Items = items, Seen = new int[items.Length], Casters = new int[items.Length];
+        // Where in Items each caster of the last cull sits: the entry of its sphere in Spheres.
+        public readonly int[] CasterSlots = new int[items.Length];
         public readonly byte[] Levels = new byte[items.Length], CasterLevels = new byte[items.Length];
         public int SeenCount, CasterCount, TooSmall, Occluded;
+        // The items' bounds in the order of Items, and the distance each is seen within (zero for any).
+        public SphereSet Spheres;
+        public float[] MaxDistance;
+        public bool Limited;
     }
 
     readonly VisibilityItem[] items;
@@ -87,7 +104,16 @@ public sealed class VisibilityGrid
                 var entries = group.ToArray();
                 var bounds = items[entries[0]].Bounds;
                 foreach (int index in entries) bounds = BoundingSphere.CreateMerged(bounds, items[index].Bounds);
-                return new Cell(bounds, entries);
+                var cell = new Cell(bounds, entries) { Spheres = new SphereSet(entries.Length) };
+                cell.MaxDistance = new float[cell.Spheres.Padded];
+                for (int slot = 0; slot < entries.Length; slot++)
+                {
+                    ref readonly var item = ref items[entries[slot]];
+                    cell.Spheres.Set(slot, item.Bounds.Center.X, item.Bounds.Center.Y, item.Bounds.Center.Z, item.Bounds.Radius);
+                    cell.MaxDistance[slot] = item.MaxDistance;
+                    cell.Limited |= item.MaxDistance > 0;
+                }
+                return cell;
             }).ToArray();
         cull = CullCells;
     }
@@ -106,6 +132,10 @@ public sealed class VisibilityGrid
     /// the view also sees then casts from the same triangles it is drawn with.
     /// </summary>
     public ReadOnlySpan<byte> CasterLevelsIn(int cell) => cells[cell].CasterLevels.AsSpan(0, cells[cell].CasterCount);
+    /// <summary>The bounds of a cell's items in the order of <see cref="ItemsIn"/>, for testing them together.</summary>
+    public SphereSet SpheresIn(int cell) => cells[cell].Spheres;
+    /// <summary>Where each item of <see cref="CastersIn"/> sits in <see cref="ItemsIn"/> and <see cref="SpheresIn"/>.</summary>
+    public ReadOnlySpan<int> CasterSlotsIn(int cell) => cells[cell].CasterSlots.AsSpan(0, cells[cell].CasterCount);
 
     /// <summary>Hides an item from every list, or shows it again: for scenery that can be destroyed.</summary>
     public void Hide(int item, bool hidden)
@@ -130,69 +160,87 @@ public sealed class VisibilityGrid
 
     void CullCells(int start, int end)
     {
-        var frustum = view.Frustum; var occlusion = view.Occlusion; var casts = view.Casts;
-        var eye = view.Eye;
+        var frustum = view.Frustum; var occlusion = view.Occlusion; var casts = view.Casts; var volume = view.CasterVolume;
+        var eye = new N.Vector3(view.Eye.X, view.Eye.Y, view.Eye.Z);
         float scale = view.PixelScale, minPixels = scale > 0 ? view.MinPixels : 0;
+        Span<N.Vector4> planes = stackalloc N.Vector4[6], casterPlanes = stackalloc N.Vector4[6];
+        SphereCulling.Planes(frustum, planes);
+        if (volume != null) SphereCulling.Planes(volume, casterPlanes);
         for (int c = start; c < end; c++)
         {
             var cell = cells[c];
             cell.SeenCount = cell.CasterCount = cell.TooSmall = cell.Occluded = 0;
-            bool inView = frustum.Intersects(cell.Bounds), inCast = casts != null && casts(cell.Bounds);
+            bool inView = frustum.Intersects(cell.Bounds);
+            bool inCast = volume != null ? volume.Intersects(cell.Bounds) : casts != null && casts(cell.Bounds);
             if (inView && occlusion != null && occlusion.Hidden(cell.Bounds)) { inView = false; cell.Occluded += cell.Items.Length; }
             if (!inView && !inCast) continue;
-            foreach (int index in cell.Items)
+
+            // The tests that are the same arithmetic for every item run over the whole cell first: how far each
+            // is from the eye, which the view's frustum or their own distance limit rules out, which cannot cast.
+            var spheres = cell.Spheres;
+            var scratch = SphereTests.Scratch.For(spheres.Padded);
+            Span<int> unseen = scratch.Culled.AsSpan(0, spheres.Padded), castless = scratch.Other.AsSpan(0, spheres.Padded);
+            Span<float> distances = scratch.Distance.AsSpan(0, spheres.Padded);
+            if (scale > 0 || cell.Limited) SphereTests.Distances(spheres, eye, distances);
+            if (inView)
             {
+                unseen.Clear();
+                if (cell.Limited) SphereTests.CullByLimit(distances, cell.MaxDistance, unseen);
+                SphereTests.CullByPlanes(spheres, planes, unseen);
+            }
+            if (inCast && volume != null)
+            {
+                castless.Clear();
+                SphereTests.CullByPlanes(spheres, casterPlanes, castless);
+            }
+
+            var entries = cell.Items;
+            for (int slot = 0; slot < entries.Length; slot++)
+            {
+                int index = entries[slot];
                 ref readonly var item = ref items[index];
                 if ((item.Traits & VisibilityTraits.Hidden) != 0) continue;
                 bool unbounded = (item.Traits & VisibilityTraits.Unbounded) != 0;
-                if (inView && Sees(in item, unbounded, frustum, occlusion, eye, scale, minPixels, cell, out byte level))
+                if (inView && (unbounded || unseen[slot] == 0))
                 {
-                    cell.Levels[cell.SeenCount] = level;
-                    cell.Seen[cell.SeenCount++] = index;
+                    byte level = 0;
+                    bool sees = true;
+                    if (!unbounded)
+                    {
+                        if (scale > 0)
+                        {
+                            float pixels = Pixels(in item, distances[slot], scale);
+                            if (pixels < minPixels) { cell.TooSmall++; sees = false; }
+                            else level = Level(in item, pixels);
+                        }
+                        if (sees && occlusion != null && occlusion.Hidden(item.Bounds)) { cell.Occluded++; sees = false; }
+                    }
+                    if (sees)
+                    {
+                        cell.Levels[cell.SeenCount] = level;
+                        cell.Seen[cell.SeenCount++] = index;
+                    }
                 }
                 // Something drawn only near the eye casts only there too.
-                if (inCast && (item.Traits & VisibilityTraits.Caster) != 0 && (unbounded || casts(item.Bounds))
-                    && (unbounded || item.MaxDistance <= 0 || Vector3.DistanceSquared(item.Bounds.Center, eye) <= item.MaxDistance * item.MaxDistance))
+                if (inCast && (item.Traits & VisibilityTraits.Caster) != 0 &&
+                    (unbounded || (volume != null ? castless[slot] == 0 : casts(item.Bounds)))
+                    && (unbounded || item.MaxDistance <= 0 || Vector3.DistanceSquared(item.Bounds.Center, view.Eye) <= item.MaxDistance * item.MaxDistance))
                 {
-                    cell.CasterLevels[cell.CasterCount] = unbounded || scale <= 0 ? (byte)0 : Level(in item, Pixels(in item, eye, scale));
+                    cell.CasterLevels[cell.CasterCount] = unbounded || scale <= 0 ? (byte)0 : Level(in item, Pixels(in item, distances[slot], scale));
+                    cell.CasterSlots[cell.CasterCount] = slot;
                     cell.Casters[cell.CasterCount++] = index;
                 }
             }
         }
     }
 
-    // An item's radius on screen, in pixels. Something the eye is inside of is as large as the screen.
-    static float Pixels(in VisibilityItem item, Vector3 eye, float scale)
-    {
-        float distance = Vector3.Distance(item.Bounds.Center, eye);
-        return distance > item.Bounds.Radius ? item.Bounds.Radius / distance * scale : float.MaxValue;
-    }
+    // An item's radius on screen, in pixels, from its distance. Something the eye is inside of is as large as the screen.
+    static float Pixels(in VisibilityItem item, float distance, float scale) =>
+        distance > item.Bounds.Radius ? item.Bounds.Radius / distance * scale : float.MaxValue;
 
     static byte Level(in VisibilityItem item, float pixels)
     {
         var coarser = item.CoarserBelow;
         return pixels >= coarser.X ? (byte)0 : pixels < coarser.Z ? (byte)3 : pixels < coarser.Y ? (byte)2 : (byte)1;
-    }
-
-    static bool Sees(in VisibilityItem item, bool unbounded, BoundingFrustum frustum, OcclusionBuffer occlusion, Vector3 eye,
-        float scale, float minPixels, Cell cell, out byte level)
-    {
-        level = 0;
-        if (unbounded) return true;
-        float distance = 0;
-        if (item.MaxDistance > 0 || scale > 0)
-        {
-            distance = Vector3.Distance(item.Bounds.Center, eye);
-            if (item.MaxDistance > 0 && distance > item.MaxDistance) return false;
-        }
-        if (!frustum.Intersects(item.Bounds)) return false;
-        if (scale > 0)
-        {
-            float pixels = distance > item.Bounds.Radius ? item.Bounds.Radius / distance * scale : float.MaxValue;
-            if (pixels < minPixels) { cell.TooSmall++; return false; }
-            level = Level(in item, pixels);
-        }
-        if (occlusion != null && occlusion.Hidden(item.Bounds)) { cell.Occluded++; return false; }
-        return true;
     }
 }
