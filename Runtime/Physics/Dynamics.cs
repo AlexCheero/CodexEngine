@@ -6,8 +6,14 @@ using Matrix4x4 = System.Numerics.Matrix4x4;
 namespace CodexEngine.Runtime;
 
 public readonly record struct CollisionLayerPair(ushort First, ushort Second);
-/// <summary>Jolt capacities: bodies, simultaneous broad-phase pairs and contact constraints, and the solver's per-step scratch memory in bytes.</summary>
-public readonly record struct CollisionLimits(int Bodies, int BodyPairs, int ContactConstraints, int SolverMemory)
+/// <summary>
+/// Jolt capacities: bodies, simultaneous broad-phase pairs and contact constraints, the solver's per-step scratch
+/// memory in bytes, and the threads a step is shared between. Zero threads takes one for every two logical
+/// processors, a thread to a core on most machines. The solver's results do not depend on their number, only its
+/// speed: with more threads than cores a crowded step itself got faster, but what a game does with the bodies
+/// right after it got slower by as much or more.
+/// </summary>
+public readonly record struct CollisionLimits(int Bodies, int BodyPairs, int ContactConstraints, int SolverMemory, int SolverThreads = 0)
 {
     public static readonly CollisionLimits Default = new(32768, 8192, 8192, 8 * 1024 * 1024);
 }
@@ -300,7 +306,7 @@ public partial class CollisionWorld
         if (!solverInitialized)
         {
             temporaryMemory = TempAllocatorImpl.Create((uint)limits.SolverMemory);
-            solverJobs = JobSystemThreadPool.Create(2048, 8, Math.Clamp(Environment.ProcessorCount / 2, 1, 4));
+            solverJobs = JobSystemThreadPool.Create(2048, 8, limits.SolverThreads > 0 ? limits.SolverThreads : Math.Max(1, Environment.ProcessorCount / 2));
             solverInitialized = true;
         }
         ArgumentOutOfRangeException.ThrowIfLessThan(subdivisions,1);
