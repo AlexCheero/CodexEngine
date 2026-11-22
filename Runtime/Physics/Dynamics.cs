@@ -129,6 +129,37 @@ public partial class CollisionWorld
         return CreateDynamicBody(nativeShape,position,rotation,mass,layer,velocity,motion,group,member);
     }
 
+    /// <summary>
+    /// A dynamic body shaped as the convex hull of <paramref name="corners"/>, given around its origin, such as a
+    /// fractured mesh cell. Jolt bounds a hull's size, so a dense point set keeps its extreme points along 96 even
+    /// directions.
+    /// </summary>
+    public RigidBody CreateDynamicHull(ReadOnlySpan<System.Numerics.Vector3> corners, Vector3 position, Quaternion rotation, float mass,
+        ushort layer, Vector3 velocity, DynamicBodyMotion motion, float convexRadius=.02f)
+    {
+        if(corners.Length<4)throw new ArgumentException("A convex hull needs at least four points.",nameof(corners));
+        var chosen=new HashSet<int>();
+        if(corners.Length<=96)for(int i=0;i<corners.Length;i++)chosen.Add(i);
+        else
+        {
+            const int directions=96;
+            for(int d=0;d<directions;d++)
+            {
+                // A Fibonacci sphere of directions.
+                float y=1-2*(d+.5f)/directions,r=MathF.Sqrt(1-y*y),a=d*2.3999632f;
+                var axis=new System.Numerics.Vector3(MathF.Cos(a)*r,y,MathF.Sin(a)*r);
+                int best=0;float most=float.NegativeInfinity;
+                for(int i=0;i<corners.Length;i++){float along=System.Numerics.Vector3.Dot(corners[i],axis);if(along>most){most=along;best=i;}}
+                chosen.Add(best);
+            }
+        }
+        var points=new Brutal.Numerics.float3[chosen.Count];int k=0;
+        foreach(int i in chosen)points[k++]=new(corners[i].X,corners[i].Y,corners[i].Z);
+        using var settings=ConvexHullShapeSettings.Create(points,convexRadius,default);
+        using var shape=settings.CreateShape();
+        return CreateDynamicBody(shape,position,rotation,mass,layer,velocity,motion);
+    }
+
     public RigidBody CreateDynamicCompound(ReadOnlySpan<CompoundPart> parts, Vector3 position, Quaternion rotation, float mass,
         ushort layer, Vector3 velocity, DynamicBodyMotion motion)
     {
