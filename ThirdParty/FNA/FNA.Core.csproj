@@ -10,6 +10,8 @@
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 		<GenerateAssemblyInfo>false</GenerateAssemblyInfo>
 		<LangVersion>9</LangVersion>
+		<!-- Vendored upstream code: keep analyzer noise about it out of our build. -->
+		<NoWarn>$(NoWarn);CA2022;CA2255</NoWarn>
 	</PropertyGroup>
 	<PropertyGroup>
 		<FNASettingsPropsFilePath>$(SolutionDir)FNA.Settings.props</FNASettingsPropsFilePath>

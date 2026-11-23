@@ -61,14 +61,14 @@ namespace CodexECS
         private MaskInternal[] _parts;
 
         private int _length;
-        public int Length
+        public readonly int Length
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             get => _length;
         }
 
         private int _setBitsCount;
-        public int SetBitsCount
+        public readonly int SetBitsCount
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             get => _setBitsCount;
