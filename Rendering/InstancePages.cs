@@ -27,7 +27,7 @@ public sealed class InstancePages<TKey,TInstance> : IDisposable where TKey : not
     private readonly int capacity;
     private readonly List<Page> pages=[];
     private readonly Dictionary<(int X,int Y,int Z,TKey Key),Page> open=[];
-    private readonly TInstance[] one=new TInstance[1];
+    private readonly TInstance[] scratch;
 
     /// <param name="declaration">The instance stream's layout; its stride is the size of <typeparamref name="TInstance"/>.</param>
     /// <param name="cellSize">Edge of the cubic cells pages are grouped by, in world units.</param>
@@ -36,6 +36,7 @@ public sealed class InstancePages<TKey,TInstance> : IDisposable where TKey : not
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(pageCapacity,1);
         this.gpu=gpu;this.declaration=declaration;this.cellSize=cellSize;capacity=pageCapacity;
+        scratch=new TInstance[pageCapacity];
     }
 
     public IReadOnlyList<Page> Pages=>pages;
@@ -44,18 +45,26 @@ public sealed class InstancePages<TKey,TInstance> : IDisposable where TKey : not
 
     /// <summary>Writes one instance into the open page of its key and cell, starting a page when that one is full.</summary>
     /// <param name="bounds">The instance's extent in the world; its centre chooses the cell.</param>
-    public void Add(TKey key,in TInstance instance,BoundingSphere bounds)
+    public void Add(TKey key,in TInstance instance,BoundingSphere bounds)=>Add(key,new ReadOnlySpan<TInstance>(in instance),bounds);
+
+    /// <summary>Writes a run of elements (a baked quad's four vertices, say) into one page, kept together: when the
+    /// open page of its key and cell has no room for all of them, that page is closed and a new one started.</summary>
+    /// <param name="bounds">The run's extent in the world; its centre chooses the cell.</param>
+    public void Add(TKey key,ReadOnlySpan<TInstance> run,BoundingSphere bounds)
     {
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(run.Length,capacity);
+        if(run.IsEmpty)return;
         var cell=((int)MathF.Floor(bounds.Center.X/cellSize),(int)MathF.Floor(bounds.Center.Y/cellSize),(int)MathF.Floor(bounds.Center.Z/cellSize),key);
-        if(!open.TryGetValue(cell,out var page))
+        if(open.TryGetValue(cell,out var page) && page.Count+run.Length>capacity){open.Remove(cell);page=null;}
+        if(page==null)
         {
             page=new Page(key,new VertexBuffer(gpu,declaration,capacity,BufferUsage.WriteOnly));
             pages.Add(page);open.Add(cell,page);
         }
-        one[0]=instance;
-        page.Buffer.SetData(page.Count*declaration.VertexStride,one,0,1,declaration.VertexStride);
+        run.CopyTo(scratch);
+        page.Buffer.SetData(page.Count*declaration.VertexStride,scratch,0,run.Length,declaration.VertexStride);
         page.Bounds=page.Count==0?bounds:BoundingSphere.CreateMerged(page.Bounds,bounds);
-        page.Count++;Count++;
+        page.Count+=run.Length;Count+=run.Length;
         if(page.Count==capacity)open.Remove(cell);
     }
 
