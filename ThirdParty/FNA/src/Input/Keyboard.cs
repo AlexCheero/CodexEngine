@@ -27,7 +27,7 @@ namespace Microsoft.Xna.Framework.Input
 		/// <returns>Current keyboard state.</returns>
 		public static KeyboardState GetState()
 		{
-			return keys;
+			return INTERNAL_Focused ? keys : default(KeyboardState);
 		}
 
 		/// <summary>
@@ -37,7 +37,7 @@ namespace Microsoft.Xna.Framework.Input
 		/// <returns>Current keyboard state.</returns>
 		public static KeyboardState GetState(PlayerIndex playerIndex)
 		{
-			return keys;
+			return GetState();
 		}
 
 		#endregion
@@ -54,6 +54,9 @@ namespace Microsoft.Xna.Framework.Input
 		#region Internal Static Variables
 
 		internal static KeyboardState keys = default(KeyboardState);
+
+		// Set by Game.IsActive: an unfocused game reads no keys.
+		internal static bool INTERNAL_Focused = true;
 
 		#endregion
 	}

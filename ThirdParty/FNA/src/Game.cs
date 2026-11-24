@@ -97,6 +97,12 @@ namespace Microsoft.Xna.Framework
 				if (INTERNAL_isActive != value)
 				{
 					INTERNAL_isActive = value;
+					// An unfocused window hears no input, see Keyboard/Mouse.INTERNAL_Focused.
+					Keyboard.INTERNAL_Focused = Mouse.INTERNAL_Focused = value;
+					if (!value)
+					{
+						Keyboard.keys = default(KeyboardState);
+					}
 					if (INTERNAL_isActive)
 					{
 						OnActivated(this, EventArgs.Empty);

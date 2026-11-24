@@ -49,6 +49,10 @@ namespace Microsoft.Xna.Framework.Input
 
 		internal static float INTERNAL_MouseWheel = 0;
 
+		// Set by Game.IsActive. The platform reads the mouse globally, so without this
+		// clicks on other windows would land on the game.
+		internal static bool INTERNAL_Focused = true;
+
 		#endregion
 
 		#region Public Events
@@ -68,6 +72,22 @@ namespace Microsoft.Xna.Framework.Input
 		{
 			int x, y;
 			ButtonState left, middle, right, x1, x2;
+
+			if (!INTERNAL_Focused)
+			{
+				// No motion in relative mode, off the window otherwise, nothing held.
+				bool relative = IsRelativeMouseModeEXT;
+				return new MouseState(
+					relative ? 0 : -1,
+					relative ? 0 : -1,
+					(int) INTERNAL_MouseWheel,
+					ButtonState.Released,
+					ButtonState.Released,
+					ButtonState.Released,
+					ButtonState.Released,
+					ButtonState.Released
+				);
+			}
 
 			FNAPlatform.GetMouseState(
 				WindowHandle,
