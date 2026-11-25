@@ -15,6 +15,12 @@ public sealed class LayeredNavigation
     public int GoalSearchCells{get;init;}=4;
     /// <summary>A moved goal stays within this height of the target's floor, so it never crosses a ceiling.</summary>
     public float GoalStoreyTolerance{get;init;}=1.5f;
+    /// <summary>
+    /// How far, in cells, a goal moves off a span agents cannot walk to (a ledge reached only by jumping) to the
+    /// nearest one they can at least a metre below it. Agents then gather under the target instead of finding no
+    /// route at all. 0 keeps the goal where it is.
+    /// </summary>
+    public int ApproachSearchCells{get;init;}=24;
 
     private LayeredNavigationGrid.Link[] links;
     private LayeredFlowAtlas[] atlases;
@@ -23,12 +29,16 @@ public sealed class LayeredNavigation
     private readonly int[] dirty,goals;
     private readonly Action<int,int> buildRange;
     private int cachedColumn=-2,cachedSupport=-2,cachedY,cachedMask;
+    // Per body class: spans agents can walk (or drop) to from the level's main walkable mass with every gate open.
+    // Gates stay out of it: a target behind a shut door keeps having no route, as before.
+    private readonly bool[][] approachable;
 
     public LayeredNavigation(LayeredNavigationGrid grid)
     {
         Grid=grid;
         fields=new LayeredFlowField[grid.ProfileCount];
         dirty=new int[grid.ProfileCount];goals=new int[grid.ProfileCount];
+        approachable=new bool[grid.ProfileCount][];
         buildRange=BuildRange;
         SetOpenGates(0);
     }
@@ -44,6 +54,86 @@ public sealed class LayeredNavigation
         Array.Clear(fields);
         cachedColumn=-2;
     }
+
+    /// <summary>
+    /// Whether agents of a class can walk to this span from the level's main walkable mass, every gate open: the
+    /// largest set of spans that all reach each other, and everything it reaches by walking, climbing or dropping.
+    /// </summary>
+    public bool Approachable(int node,int profile)=>node>=0 && (approachable[profile]??=FindApproachable(profile))[node];
+
+    private bool[] FindApproachable(int profile)
+    {
+        int count=Grid.NodeCount,mask=1<<profile;
+        var links=Grid.Links;
+        // Iterative Tarjan: strongly connected components of the class's links.
+        var index=new int[count];Array.Fill(index,-1);
+        var low=new int[count];var component=new int[count];var onStack=new bool[count];
+        var stack=new int[count];var call=new (int Node,int Next)[count];
+        int counter=0,top=0,components=0,largest=-1,largestSize=0;
+        for(int root=0;root<count;root++)
+        {
+            if(index[root]>=0 || (Grid.Occupancy[root]&mask)==0)continue;
+            int depth=0;call[depth++]=(root,Grid.Edges[root]);
+            index[root]=low[root]=counter++;stack[top++]=root;onStack[root]=true;
+            while(depth>0)
+            {
+                ref var frame=ref call[depth-1];
+                int v=frame.Node;
+                if(frame.Next<Grid.Edges[v+1])
+                {
+                    ref readonly var e=ref links[frame.Next++];
+                    if((e.Profiles&mask)==0)continue;
+                    int w=e.To;
+                    if(index[w]<0){index[w]=low[w]=counter++;stack[top++]=w;onStack[w]=true;call[depth++]=(w,Grid.Edges[w]);}
+                    else if(onStack[w])low[v]=Math.Min(low[v],index[w]);
+                    continue;
+                }
+                if(low[v]==index[v])
+                {
+                    int size=0,w;
+                    do{w=stack[--top];onStack[w]=false;component[w]=components;size++;}while(w!=v);
+                    if(size>largestSize){largestSize=size;largest=components;}
+                    components++;
+                }
+                depth--;
+                if(depth>0){int parent=call[depth-1].Node;low[parent]=Math.Min(low[parent],low[v]);}
+            }
+        }
+        var reach=new bool[count];
+        if(largest<0)return reach;
+        int head=0,tail=0;
+        for(int n=0;n<count;n++)if(index[n]>=0 && component[n]==largest){reach[n]=true;stack[tail++]=n;}
+        while(head<tail)
+        {
+            int n=stack[head++];
+            for(int i=Grid.Edges[n];i<Grid.Edges[n+1];i++)
+            {
+                ref readonly var e=ref links[i];
+                if((e.Profiles&mask)!=0 && !reach[e.To]){reach[e.To]=true;stack[tail++]=e.To;}
+            }
+        }
+        return reach;
+    }
+
+    // For a goal agents cannot walk to, the nearest span they can at least a metre below it: they gather under a
+    // ledge the target jumped onto. A goal cut off at its own height (a sealed room, a split floor) keeps no route.
+    private int Approach(int goal,Vector3 target,int profile)
+    {
+        if(ApproachSearchCells<=0 || Approachable(goal,profile))return goal;
+        var reach=approachable[profile];
+        int mask=1<<profile,width=Grid.Width,c=Grid.Column[goal],cx=c%width,cz=c/width,r=ApproachSearchCells,best=-1;
+        float floor=Grid.Floors[goal]-1,bestDistance=float.PositiveInfinity;
+        for(int z=Math.Max(0,cz-r);z<=Math.Min(Grid.Length-1,cz+r);z++)
+        for(int x=Math.Max(0,cx-r);x<=Math.Min(width-1,cx+r);x++)
+        {
+            int n=Grid.Support(z*width+x,floor);
+            if(n<0 || Grid.Floors[n]>floor || !reach[n] || (Grid.Occupancy[n]&mask)==0)continue;
+            var at=Grid.CenterNode(n);
+            float d=(at.X-target.X)*(at.X-target.X)+(at.Z-target.Z)*(at.Z-target.Z);
+            if(d<bestDistance){bestDistance=d;best=n;}
+        }
+        return best>=0?best:goal;
+    }
     public int OpenGates=>gateState;
 
     /// <summary>
@@ -54,6 +144,7 @@ public sealed class LayeredNavigation
     {
         if(grid==Grid)return;
         if(grid.ProfileCount!=Grid.ProfileCount)throw new ArgumentException("The grid has other body classes.");
+        Array.Clear(approachable);
         int open=gateState;
         Grid=grid;gateState=-1;
         SetOpenGates(open);
@@ -126,6 +217,42 @@ public sealed class LayeredNavigation
         return node==end;
     }
 
+    /// <summary>
+    /// Naive local steering toward a point, without a flow field: the straight heading when a walk along it stays on
+    /// linked spans for up to <paramref name="lookAhead"/> metres, else the clear heading nearest to it in 30 degree
+    /// steps to either side (the <paramref name="side"/> sign is tried first), up to square to it. Zero when the body
+    /// stands on no span or every heading is blocked. Short-sighted by design and costs a few segment walks: meant
+    /// for secondary goals close to a body (fighting a neighbour), while far goals share the flow field.
+    /// </summary>
+    public Vector3 Seek(Vector3 from,Vector3 to,int profile,float lookAhead,int side=1)
+    {
+        int node=Resolve(from,profile);
+        if(node<0)return Vector3.Zero;
+        var delta=new Vector3(to.X-from.X,0,to.Z-from.Z);
+        float distance=delta.Length();
+        if(distance<1e-4f)return Vector3.Zero;
+        var forward=delta/distance;
+        float reach=Math.Min(distance,lookAhead);
+        side=side<0?-1:1;
+        for(int i=0;i<7;i++)
+        {
+            float angle=(i+1)/2*((i&1)==1?side:-side)*(MathF.PI/6);
+            float cos=MathF.Cos(angle),sin=MathF.Sin(angle);
+            var heading=new Vector3(forward.X*cos-forward.Z*sin,0,forward.X*sin+forward.Z*cos);
+            // Straight on, a short walk that already reaches the goal's storey counts too (the goal may stand in a
+            // span too tight for this body); a turned heading must keep its footing for the whole look-ahead.
+            for(float length=reach;length>=reach*.4f;length*=.5f)
+            {
+                var probe=from+heading*length;
+                probe.Y=i==0?float.Lerp(from.Y,to.Y,length/distance):from.Y;
+                int end=Resolve(probe,profile);
+                if(end>=0 && ClearWalkSegment(from,probe,profile,node,end))return heading;
+                if(i!=0)break;
+            }
+        }
+        return Vector3.Zero;
+    }
+
     private int GoalNear(Vector3 target,int profile,int c,int support)
     {
         if(c<0)return -1;
@@ -165,7 +292,8 @@ public sealed class LayeredNavigation
             var field=fields[p]??=new(atlases[p]);
             if((cachedMask&(1<<p))==0)
             {
-                goals[p]=GoalNear(target,p,column,support);cachedMask|=1<<p;
+                int goal=GoalNear(target,p,column,support);
+                goals[p]=goal>=0?Approach(goal,target,p):goal;cachedMask|=1<<p;
             }
             if(field.Goal==goals[p])continue;
             dirty[count++]=p;

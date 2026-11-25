@@ -27,6 +27,12 @@ public struct BodySample : IComponent
     /// <summary>Layers that count as support. Zero skips the probe.</summary>
     public int SupportMask;
     public float SupportTolerance, SupportMinimumDot;
+    /// <summary>
+    /// Solver steps between support probes, for bodies whose owner updates them less often (a far crowd). 0 or 1
+    /// probes every step; otherwise the probe runs on one step in N, staggered by entity, and Supported keeps the
+    /// last answer in between. Position and velocity are read every step.
+    /// </summary>
+    public int SupportInterval;
     public N.Vector3 Position, Velocity;
     public bool Supported;
 }
@@ -116,7 +122,8 @@ public sealed class BodySampleSystem : EcsBatchSystem
             var body = s.Body;
             s.Position = body.Collider.transform.position.ToNumerics();
             s.Velocity = body.LinearVelocity.ToNumerics();
-            if (s.SupportMask != 0) s.Supported = body.HasSupport(Vector3.up, s.SupportTolerance, s.SupportMinimumDot, s.SupportMask);
+            if (s.SupportMask != 0 && (s.SupportInterval <= 1 || (physics.Steps + id) % s.SupportInterval == 0))
+                s.Supported = body.HasSupport(Vector3.up, s.SupportTolerance, s.SupportMinimumDot, s.SupportMask);
         }
     }
 }

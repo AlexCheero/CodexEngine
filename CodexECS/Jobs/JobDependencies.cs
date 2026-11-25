@@ -145,31 +145,42 @@ namespace CodexECS
         /// </summary>
         public void CompleteAll()
         {
-            if (_touched.Count == 0 && _walking.Count == 0)
-                return;
-            try
+            // Completing a handle runs queued jobs on this thread while it waits, and such a job may sync the world
+            // again or schedule more work. So each round takes the recorded handles out first, forgets them, and only
+            // then completes them; anything recorded meanwhile is finished by the next round. A nested call works on
+            // its own snapshot and never sees this one's lists change under it.
+            while (_touched.Count != 0 || _walking.Count != 0)
             {
+                int count = _walking.Count;
+                foreach (int type in _touched)
+                    count += 1 + (_readers[type]?.Count ?? 0);
+                var handles = System.Buffers.ArrayPool<JobHandle>.Shared.Rent(count);
+                int taken = 0;
                 foreach (var walking in _walking)
-                    walking.Complete();
+                    handles[taken++] = walking;
                 foreach (int type in _touched)
                 {
-                    _writers[type].Complete();
+                    handles[taken++] = _writers[type];
+                    _writers[type] = default;
                     var readers = _readers[type];
                     if (readers == null)
                         continue;
                     foreach (var reader in readers)
-                        reader.Complete();
-                }
-            }
-            finally
-            {
-                foreach (int type in _touched)
-                {
-                    _writers[type] = default;
-                    _readers[type]?.Clear();
+                        handles[taken++] = reader;
+                    readers.Clear();
                 }
                 _touched.Clear();
                 _walking.Clear();
+                try
+                {
+                    for (int i = 0; i < taken; i++)
+                        handles[i].Complete();
+                }
+                finally
+                {
+                    Array.Clear(handles, 0, taken);
+                    System.Buffers.ArrayPool<JobHandle>.Shared.Return(handles);
+                }
             }
         }
     }

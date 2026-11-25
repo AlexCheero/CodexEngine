@@ -91,6 +91,19 @@ public readonly struct RigidBody : IDisposable
     public void SetLinearVelocity(Vector3 velocity) { World.TouchBody(Id); World.Bodies.SetLinearVelocity(Id, CollisionWorld.Native(velocity)); }
     public Vector3 LinearVelocity => CollisionWorld.Managed(World.Bodies.GetLinearVelocity(Id));
     public bool IsSleeping => !World.Bodies.IsActive(Id);
+    public Vector3 AngularVelocity => CollisionWorld.Managed(World.Bodies.GetAngularVelocity(Id));
+    /// <summary>Velocity of a world-space point carried by the body (linear plus angular).</summary>
+    public Vector3 PointVelocity(Vector3 point) => CollisionWorld.Managed(World.Bodies.GetPointVelocity(Id, CollisionWorld.Native(point)));
+    public void AddAngularImpulse(Vector3 impulse) { World.TouchBody(Id); World.Bodies.AddAngularImpulse(Id, CollisionWorld.Native(impulse)); }
+    /// <summary>Places the body and sets its velocities, waking it: a respawn or a teleport.</summary>
+    public void Teleport(Vector3 position, Quaternion rotation, Vector3 linear, Vector3 angular)
+    {
+        World.TouchBody(Id);
+        World.Bodies.SetPositionRotationAndVelocity(Id, CollisionWorld.Native(position), CollisionWorld.Native(rotation), CollisionWorld.Native(linear), CollisionWorld.Native(angular));
+        Collider.transform.SetSimulatedPose(position, rotation);
+    }
+    /// <summary>Swept collision for a fast body (a car at speed), so it cannot pass through thin geometry in one step.</summary>
+    public void SetContinuous(bool value) => World.Bodies.SetMotionQuality(Id, value ? MotionQuality.LinearCast : MotionQuality.Discrete);
     public void SetFriction(float value) => World.Bodies.SetFriction(Id,value);
     public void SetGravityFactor(float factor) => World.Bodies.SetGravityFactor(Id,factor);
     public Matrix4x4 Pose => Matrix4x4.CreateFromQuaternion(Collider.transform.rotation.ToNumerics())
