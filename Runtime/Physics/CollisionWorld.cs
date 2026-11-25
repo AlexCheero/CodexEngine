@@ -148,7 +148,8 @@ public sealed class Collider : IDisposable
     }
     // The object layer the body was made in.
     private readonly ushort layer;
-    internal bool Dynamic { get; }
+    /// <summary>Whether the collider is a moving body (dynamic or kinematic) rather than part of the static world.</summary>
+    public bool Dynamic { get; }
     internal int DynamicSlot=-1;
     public void SetCapsule(float height,float radius)
     {
@@ -321,7 +322,7 @@ public partial class CollisionWorld : IDisposable
         foreach (uint id in nodes.Keys) Remove(id);
         DisposeQuerySettings();
         ReleaseDynamics();
-        system.Dispose(); broad.Dispose(); pairs.Dispose(); layers.Dispose();
+        system.Dispose(); ReleaseContacts(); broad.Dispose(); pairs.Dispose(); layers.Dispose();
         if (active.Value == this) active.Value = previous;
         lock (factoryLock)
         {
