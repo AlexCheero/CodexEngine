@@ -105,6 +105,18 @@ public readonly struct RigidBody : IDisposable
     /// <summary>Swept collision for a fast body (a car at speed), so it cannot pass through thin geometry in one step.</summary>
     public void SetContinuous(bool value) => World.Bodies.SetMotionQuality(Id, value ? MotionQuality.LinearCast : MotionQuality.Discrete);
     public void SetFriction(float value) => World.Bodies.SetFriction(Id,value);
+    /// <summary>
+    /// Gives the body a new compound shape in place (a crushed hull, say), keeping its mass and inertia, and its centre
+    /// of mass at <paramref name="centerOfMass"/> (body space) so the change does not shift how it handles.
+    /// </summary>
+    public void SetShape(ReadOnlySpan<CompoundPart> parts,Vector3 centerOfMass)
+    {
+        World.TouchBody(Id);
+        using var compound=CollisionWorld.CreateCompoundShape(parts);
+        var offset=CollisionWorld.Native(centerOfMass)-compound.GetCenterOfMass();
+        using var shape=OffsetCenterOfMassShape.Create(compound,offset);
+        World.Bodies.SetShape(Id,shape,false,Activation.Activate);
+    }
     public void SetGravityFactor(float factor) => World.Bodies.SetGravityFactor(Id,factor);
     public Matrix4x4 Pose => Matrix4x4.CreateFromQuaternion(Collider.transform.rotation.ToNumerics())
                           * Matrix4x4.CreateTranslation(Collider.transform.position.ToNumerics());
