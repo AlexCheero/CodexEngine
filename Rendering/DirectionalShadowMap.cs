@@ -26,7 +26,7 @@ public sealed class DirectionalShadowMap : IDisposable
     readonly RenderTarget2D depth;
     readonly int resolution, filter;
     readonly float casterDepth, limit;
-    readonly Matrix basis;
+    Matrix basis;
     readonly float[] radius;
     readonly Vector3[] origin;
     readonly Matrix[] viewProjection;
@@ -34,7 +34,7 @@ public sealed class DirectionalShadowMap : IDisposable
     readonly Vector4[] cascadeData = new Vector4[MaxCascades];
     int current;
 
-    public Vector3 Direction { get; }
+    public Vector3 Direction { get; private set; }
     public int Cascades => radius.Length;
     /// <summary>The cascade being drawn: the first after <see cref="Begin"/>, then the one given to <see cref="BeginCascade"/>.</summary>
     public Matrix ViewProjection => viewProjection[current];
@@ -61,6 +61,18 @@ public sealed class DirectionalShadowMap : IDisposable
         origin = new Vector3[cascades];
         viewProjection = new Matrix[cascades];
         depth = new RenderTarget2D(gpu, resolution * cascades, resolution, false, SurfaceFormat.Single, DepthFormat.Depth24);
+    }
+
+    /// <summary>
+    /// Turns the light to a new direction (toward the light, as at construction): a sun or moon moving across the sky.
+    /// Takes effect at the next <see cref="Position(Vector3)"/>; every turn moves the light-space texel grid, so callers
+    /// moving a light slowly should step it rather than turn it a little every frame.
+    /// </summary>
+    public void Aim(Vector3 direction)
+    {
+        Direction = Vector3.Normalize(direction);
+        var up = Math.Abs(Direction.Y) > .99f ? Vector3.Forward : Vector3.Up;
+        basis = Matrix.CreateLookAt(Vector3.Zero, -Direction, up);
     }
 
     /// <summary>Centres every cascade on one point.</summary>
